@@ -1,16 +1,16 @@
 {
   "send_preview_to_chat": {
-    "description": "手动执行自拍说说命令后，是否把本次自拍预览回发到聊天",
+    "description": "手动执行自拍说说命令后，是否把本次生成的自拍预览回发到当前聊天",
     "type": "bool",
     "default": true
   },
   "regenerate_life_when_missing": {
-    "description": "当天没有生活日程时是否自动补生成",
+    "description": "当天没有生活日程时，是否自动补生成一份",
     "type": "bool",
     "default": true
   },
   "takeover_qzone_publish": {
-    "description": "是否自动接管 qzone 插件自己的发说说、LLM 发帖和定时发布流程",
+    "description": "是否自动接管 qzone 插件自己的发说说、LLM 发帖和定时发帖流程",
     "type": "bool",
     "default": true
   },
@@ -28,6 +28,36 @@
     "description": "每日自动发说说时间列表，支持 HH:MM 或 HH:MM:SS，例如 08:30、12:00、21:45",
     "type": "list",
     "default": []
+  },
+  "precheck_qzone_before_publish": {
+    "description": "每次发布前是否先验证 QQ 空间登录状态，通过后才继续生成图片和文案",
+    "type": "bool",
+    "default": true
+  },
+  "auto_refresh_qzone_cookies": {
+    "description": "预检时若有可用 bot client，是否先主动刷新 QQ 空间 cookies",
+    "type": "bool",
+    "default": true
+  },
+  "notify_target_users": {
+    "description": "定时自动发说说结果通知的私聊 QQ 列表，只保留纯数字 ID",
+    "type": "list",
+    "default": []
+  },
+  "notify_target_groups": {
+    "description": "定时自动发说说结果通知的群号列表，只保留纯数字 ID",
+    "type": "list",
+    "default": []
+  },
+  "notify_on_success": {
+    "description": "定时自动发说说成功后，是否把图片和结果通知给指定 QQ 或群",
+    "type": "bool",
+    "default": true
+  },
+  "notify_on_failure": {
+    "description": "定时自动发说说失败后，是否把错误通知给指定 QQ 或群",
+    "type": "bool",
+    "default": true
   },
   "selfie_prompt_template": {
     "description": "自拍改图提示词模板",
