@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.1.3
+
+- 插件启动后自动扫描当前 AstrBot 已配置的聊天 Provider，并回写到优化器下拉选项
+- 不再依赖单独修改 AstrBot 后台路由，也能在配置页看到已配置模型
+
 ## v0.1.2
 
 - 兼容增强版 `astrbot_plugin_life_scheduler_enhanced`
