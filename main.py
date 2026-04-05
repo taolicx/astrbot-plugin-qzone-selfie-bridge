@@ -34,12 +34,29 @@ from astrbot_plugin_gitee_aiimg.core.image_manager import ImageManager
 from astrbot_plugin_gitee_aiimg.core.provider_registry import ProviderRegistry
 from astrbot_plugin_gitee_aiimg.core.ref_store import ReferenceStore
 from astrbot_plugin_gitee_aiimg.core.utils import close_session, get_images_from_event
-from astrbot_plugin_life_scheduler.core.data import ScheduleData, ScheduleDataManager
-from astrbot_plugin_life_scheduler.core.generator import SchedulerGenerator
 from astrbot_plugin_qzone.core.model import Post
 from astrbot_plugin_qzone.core.qzone.api import QzoneAPI
 from astrbot_plugin_qzone.core.qzone.session import QzoneSession
 from astrbot_plugin_qzone.core.qzone.utils import download_file as download_remote_image
+
+LIFE_PLUGIN_CANDIDATES = (
+    "astrbot_plugin_life_scheduler_enhanced",
+    "astrbot_plugin_life_scheduler",
+)
+
+try:
+    from astrbot_plugin_life_scheduler_enhanced.data import (
+        ScheduleData,
+        ScheduleDataManager,
+    )
+    from astrbot_plugin_life_scheduler_enhanced.generator import SchedulerGenerator
+
+    ACTIVE_LIFE_PLUGIN_IMPORT = "astrbot_plugin_life_scheduler_enhanced"
+except ModuleNotFoundError:
+    from astrbot_plugin_life_scheduler.data import ScheduleData, ScheduleDataManager
+    from astrbot_plugin_life_scheduler.generator import SchedulerGenerator
+
+    ACTIVE_LIFE_PLUGIN_IMPORT = "astrbot_plugin_life_scheduler"
 
 
 @dataclass(slots=True)
@@ -228,10 +245,32 @@ class QzoneSelfieBridgePlugin(Star):
         self._patched_qzone_services: dict[int, tuple[Any, Callable[..., Awaitable[Post]]]] = {}
         self._schedule_timezone = self._resolve_schedule_timezone()
         self._custom_publish_scheduler: DailySelfiePublishScheduler | None = None
+        self.active_life_plugin_id = ACTIVE_LIFE_PLUGIN_IMPORT
+
+    def _resolve_existing_path(
+        self,
+        base_dir: Path,
+        suffix: str,
+        *,
+        mkdir: bool = False,
+        fallback_plugin_id: str | None = None,
+    ) -> Path:
+        for plugin_id in LIFE_PLUGIN_CANDIDATES:
+            candidate = base_dir / f"{plugin_id}{suffix}"
+            if candidate.exists():
+                self.active_life_plugin_id = plugin_id
+                return candidate
+
+        selected = fallback_plugin_id or self.active_life_plugin_id
+        target = base_dir / f"{selected}{suffix}"
+        if mkdir:
+            target.mkdir(parents=True, exist_ok=True)
+        return target
 
     async def initialize(self):
-        self.life_config_path = (
-            self.config_dir / "astrbot_plugin_life_scheduler_config.json"
+        self.life_config_path = self._resolve_existing_path(
+            self.config_dir,
+            "_config.json",
         )
         self.qzone_config_path = self.config_dir / "astrbot_plugin_qzone_config.json"
         self.gitee_config_path = (
@@ -242,13 +281,22 @@ class QzoneSelfieBridgePlugin(Star):
         self.qzone_config_raw = self._read_json(self.qzone_config_path)
         self.gitee_config_raw = self._read_json(self.gitee_config_path)
 
-        self.life_data_dir = self.plugin_data_root / "astrbot_plugin_life_scheduler"
-        self.life_data_dir.mkdir(parents=True, exist_ok=True)
+        self.life_data_dir = self._resolve_existing_path(
+            self.plugin_data_root,
+            "",
+            mkdir=True,
+        )
         self.life_data_mgr = ScheduleDataManager(
             self.life_data_dir / "schedule_data.json"
         )
         self.life_generator = SchedulerGenerator(
             self.context, self.life_config_raw, self.life_data_mgr
+        )
+        logger.info(
+            "[QzoneSelfieBridge] using life scheduler plugin id=%s config=%s data=%s",
+            self.active_life_plugin_id,
+            self.life_config_path,
+            self.life_data_dir,
         )
 
         self.gitee_data_dir = self.plugin_data_root / "astrbot_plugin_gitee_aiimg"
