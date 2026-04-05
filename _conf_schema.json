@@ -1,0 +1,70 @@
+{
+  "send_preview_to_chat": {
+    "description": "手动执行自拍说说命令后，是否把本次自拍预览回发到聊天",
+    "type": "bool",
+    "default": true
+  },
+  "regenerate_life_when_missing": {
+    "description": "当天没有生活日程时是否自动补生成",
+    "type": "bool",
+    "default": true
+  },
+  "takeover_qzone_publish": {
+    "description": "是否自动接管 qzone 插件自己的发说说、LLM 发帖和定时发布流程",
+    "type": "bool",
+    "default": true
+  },
+  "append_selfie_to_existing_images": {
+    "description": "接管 qzone 发帖时，是否在原有配图基础上再附加自拍",
+    "type": "bool",
+    "default": true
+  },
+  "custom_publish_enabled": {
+    "description": "是否启用桥接插件自己的每日固定时间自动发说说",
+    "type": "bool",
+    "default": false
+  },
+  "custom_publish_times": {
+    "description": "每日自动发说说时间列表，支持 HH:MM 或 HH:MM:SS，例如 08:30、12:00、21:45",
+    "type": "list",
+    "default": []
+  },
+  "selfie_prompt_template": {
+    "description": "自拍提示词模板",
+    "type": "text",
+    "default": "请生成一张自然、真实、生活感强的自拍。穿搭风格：{outfit_style}。今日穿搭：{outfit}。{character_traits_block}整体气质要和这身穿搭一致，像是本人随手拍下的生活照片。{extra}"
+  },
+  "selfie_character_traits": {
+    "description": "固定附加到自拍提示词里的角色特征，可写性别、年龄感、体型、气质等",
+    "type": "string",
+    "default": ""
+  },
+  "optimize_selfie_prompt": {
+    "description": "是否先用单独的聊天模型优化自拍生图提示词",
+    "type": "bool",
+    "default": false
+  },
+  "selfie_prompt_optimizer_provider_id": {
+    "description": "用于优化自拍提示词的聊天 Provider ID，打开配置页时会自动刷新为当前已配置的聊天 Provider，留空则跟随当前会话模型",
+    "type": "string",
+    "options": [
+      ""
+    ],
+    "default": ""
+  },
+  "selfie_prompt_optimizer_template": {
+    "description": "自拍提示词优化器模板",
+    "type": "text",
+    "default": "你要把以下自拍生图提示词优化成更适合图像模型的版本。请只输出优化后的提示词本身，不要解释，不要分点，不要带引号。目标：真实、自然、好看、生活感强的自拍，人像自然，穿搭清晰，构图干净，照片质感好。优先突出发型、五官、表情、穿搭和整体气质的统一性，避免抽象废话和看不出来的剧情细节。基础提示词：{base_prompt}。穿搭风格：{outfit_style}。今日穿搭：{outfit}。{character_traits_block}附加要求：{extra}。"
+  },
+  "caption_prompt_template": {
+    "description": "说说文案提示词模板",
+    "type": "text",
+    "default": "你要为一条配有自拍的QQ空间说说写文案。请根据以下信息，用第一人称自述写一句像真人随手发的短句。穿搭风格：{outfit_style}。今日穿搭：{outfit}。今日安排：{schedule}。自拍设定：{selfie_prompt}。附加要求：{extra}。要求：尽量只输出一句话，优先以“我”或“今天”开头，控制在12到24字，不要分点，不要解释，不要带引号，不要写成提示词，不要写看不出来的行程细节，重点围绕自拍和穿搭本身。"
+  },
+  "fallback_caption_template": {
+    "description": "LLM 不可用时的回退文案模板",
+    "type": "string",
+    "default": "我今天穿着{outfit}顺手拍了一张。"
+  }
+}
