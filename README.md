@@ -13,7 +13,7 @@
 
 安装并启用以下插件后再使用：
 
-- `astrbot_plugin_life_scheduler`
+- `astrbot_plugin_life_scheduler` 或 `astrbot_plugin_life_scheduler_enhanced`
 - `astrbot_plugin_gitee_aiimg`
 - `astrbot_plugin_qzone`
 
