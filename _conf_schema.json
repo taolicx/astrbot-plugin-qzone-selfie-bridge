@@ -30,9 +30,9 @@
     "default": []
   },
   "selfie_prompt_template": {
-    "description": "自拍提示词模板",
+    "description": "自拍改图提示词模板",
     "type": "text",
-    "default": "请生成一张自然、真实、生活感强的自拍。穿搭风格：{outfit_style}。今日穿搭：{outfit}。{character_traits_block}整体气质要和这身穿搭一致，像是本人随手拍下的生活照片。{extra}"
+    "default": "请基于提供的自拍参考图完成一次自然、真实、生活感强的自拍改图。必须保持同一人物的身份一致性、脸部特征和主体关系。穿搭风格：{outfit_style}。今日穿搭：{outfit}。{character_traits_block}请重点调整穿搭、发型细节、表情、姿态、背景氛围与镜头质感。整体效果要像本人随手拍下的真实生活自拍，不要变成陌生人，也不要做成纯文生图感。{extra}"
   },
   "selfie_character_traits": {
     "description": "固定附加到自拍提示词里的角色特征，可写性别、年龄感、体型、气质等",
@@ -40,7 +40,7 @@
     "default": ""
   },
   "optimize_selfie_prompt": {
-    "description": "是否先用单独的聊天模型优化自拍生图提示词",
+    "description": "是否先用单独的聊天模型优化自拍改图提示词",
     "type": "bool",
     "default": false
   },
@@ -53,9 +53,9 @@
     "default": ""
   },
   "selfie_prompt_optimizer_template": {
-    "description": "自拍提示词优化器模板",
+    "description": "自拍改图提示词优化器模板",
     "type": "text",
-    "default": "你要把以下自拍生图提示词优化成更适合图像模型的版本。请只输出优化后的提示词本身，不要解释，不要分点，不要带引号。目标：真实、自然、好看、生活感强的自拍，人像自然，穿搭清晰，构图干净，照片质感好。优先突出发型、五官、表情、穿搭和整体气质的统一性，避免抽象废话和看不出来的剧情细节。基础提示词：{base_prompt}。穿搭风格：{outfit_style}。今日穿搭：{outfit}。{character_traits_block}附加要求：{extra}。"
+    "default": "你要把以下自拍改图提示词优化成更适合参考图改图模型的版本。这是改图，不是文生图，必须围绕参考图中的同一人物做编辑。请只输出优化后的提示词本身，不要解释，不要分点，不要带引号。目标：真实、自然、好看、生活感强的自拍改图，人像自然，穿搭清晰，构图干净，照片质感好。优先保留人物的身份一致性，突出发型、五官、表情、穿搭和整体气质的统一性，可以调整背景氛围但不要偏离真实自拍感。基础提示词：{base_prompt}。穿搭风格：{outfit_style}。今日穿搭：{outfit}。{character_traits_block}附加要求：{extra}。"
   },
   "caption_prompt_template": {
     "description": "说说文案提示词模板",
