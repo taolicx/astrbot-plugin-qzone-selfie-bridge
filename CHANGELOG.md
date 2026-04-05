@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.1.2
+
+- 兼容增强版 `astrbot_plugin_life_scheduler_enhanced`
+- 自动识别原版与增强版的配置文件名和数据目录名
+- 避免仅安装增强版时出现 `No module named 'astrbot_plugin_life_scheduler'`
+
 ## v0.1.1
 
 - 整理为可公开发布的 GitHub 仓库版本
