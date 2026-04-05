@@ -16,9 +16,13 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent, filter
-from astrbot.api.message_components import Image
 from astrbot.api.star import Context, Star
 from astrbot.core.config.astrbot_config import AstrBotConfig
+from astrbot.core.message.components import Image as CoreImage, Plain
+from astrbot.core.message.message_event_result import MessageChain
+from astrbot.core.platform.sources.aiocqhttp.aiocqhttp_message_event import (
+    AiocqhttpMessageEvent,
+)
 from astrbot.core.star.star import StarMetadata, star_registry
 from astrbot.core.star.star_tools import StarTools
 
@@ -34,29 +38,12 @@ from astrbot_plugin_gitee_aiimg.core.image_manager import ImageManager
 from astrbot_plugin_gitee_aiimg.core.provider_registry import ProviderRegistry
 from astrbot_plugin_gitee_aiimg.core.ref_store import ReferenceStore
 from astrbot_plugin_gitee_aiimg.core.utils import close_session, get_images_from_event
+from astrbot_plugin_life_scheduler.core.data import ScheduleData, ScheduleDataManager
+from astrbot_plugin_life_scheduler.core.generator import SchedulerGenerator
 from astrbot_plugin_qzone.core.model import Post
 from astrbot_plugin_qzone.core.qzone.api import QzoneAPI
 from astrbot_plugin_qzone.core.qzone.session import QzoneSession
 from astrbot_plugin_qzone.core.qzone.utils import download_file as download_remote_image
-
-LIFE_PLUGIN_CANDIDATES = (
-    "astrbot_plugin_life_scheduler_enhanced",
-    "astrbot_plugin_life_scheduler",
-)
-
-try:
-    from astrbot_plugin_life_scheduler_enhanced.data import (
-        ScheduleData,
-        ScheduleDataManager,
-    )
-    from astrbot_plugin_life_scheduler_enhanced.generator import SchedulerGenerator
-
-    ACTIVE_LIFE_PLUGIN_IMPORT = "astrbot_plugin_life_scheduler_enhanced"
-except ModuleNotFoundError:
-    from astrbot_plugin_life_scheduler.data import ScheduleData, ScheduleDataManager
-    from astrbot_plugin_life_scheduler.generator import SchedulerGenerator
-
-    ACTIVE_LIFE_PLUGIN_IMPORT = "astrbot_plugin_life_scheduler"
 
 
 @dataclass(slots=True)
@@ -67,6 +54,12 @@ class BridgeConfig:
     append_selfie_to_existing_images: bool
     custom_publish_enabled: bool
     custom_publish_times: tuple[str, ...]
+    precheck_qzone_before_publish: bool
+    auto_refresh_qzone_cookies: bool
+    notify_target_users: tuple[str, ...]
+    notify_target_groups: tuple[str, ...]
+    notify_on_success: bool
+    notify_on_failure: bool
     selfie_prompt_template: str
     selfie_character_traits: str
     optimize_selfie_prompt: bool
@@ -91,6 +84,22 @@ class BridgeConfig:
             result.append(item)
         return tuple(result)
 
+    @staticmethod
+    def _normalize_id_items(raw: Any) -> tuple[str, ...]:
+        if isinstance(raw, str):
+            parts = re.split(r"[\s,\uff0c;\uff1b|]+", raw.strip())
+        elif isinstance(raw, list):
+            parts = [str(item).strip() for item in raw]
+        else:
+            return ()
+
+        result: list[str] = []
+        for item in parts:
+            if not item or not item.isdigit() or item in result:
+                continue
+            result.append(item)
+        return tuple(result)
+
     @classmethod
     def from_mapping(cls, raw: dict[str, Any] | None) -> "BridgeConfig":
         data = raw or {}
@@ -107,6 +116,20 @@ class BridgeConfig:
             custom_publish_times=cls._normalize_time_items(
                 data.get("custom_publish_times", [])
             ),
+            precheck_qzone_before_publish=bool(
+                data.get("precheck_qzone_before_publish", True)
+            ),
+            auto_refresh_qzone_cookies=bool(
+                data.get("auto_refresh_qzone_cookies", True)
+            ),
+            notify_target_users=cls._normalize_id_items(
+                data.get("notify_target_users", [])
+            ),
+            notify_target_groups=cls._normalize_id_items(
+                data.get("notify_target_groups", [])
+            ),
+            notify_on_success=bool(data.get("notify_on_success", True)),
+            notify_on_failure=bool(data.get("notify_on_failure", True)),
             selfie_prompt_template=str(
                 data.get("selfie_prompt_template")
                 or (
@@ -248,95 +271,10 @@ class QzoneSelfieBridgePlugin(Star):
         self._patched_qzone_services: dict[int, tuple[Any, Callable[..., Awaitable[Post]]]] = {}
         self._schedule_timezone = self._resolve_schedule_timezone()
         self._custom_publish_scheduler: DailySelfiePublishScheduler | None = None
-        self.active_life_plugin_id = ACTIVE_LIFE_PLUGIN_IMPORT
-
-    def _resolve_existing_path(
-        self,
-        base_dir: Path,
-        suffix: str,
-        *,
-        mkdir: bool = False,
-        fallback_plugin_id: str | None = None,
-    ) -> Path:
-        for plugin_id in LIFE_PLUGIN_CANDIDATES:
-            candidate = base_dir / f"{plugin_id}{suffix}"
-            if candidate.exists():
-                self.active_life_plugin_id = plugin_id
-                return candidate
-
-        selected = fallback_plugin_id or self.active_life_plugin_id
-        target = base_dir / f"{selected}{suffix}"
-        if mkdir:
-            target.mkdir(parents=True, exist_ok=True)
-        return target
-
-    def _get_dynamic_chat_provider_ids(self) -> list[str]:
-        provider_ids: list[str] = []
-        try:
-            providers = self.context.get_all_providers()
-        except Exception as exc:
-            logger.warning(
-                "[QzoneSelfieBridge] get providers for schema sync failed: %s",
-                exc,
-            )
-            return provider_ids
-
-        for provider in providers or []:
-            try:
-                provider_id = str(provider.meta().id or "").strip()
-            except Exception:
-                provider_cfg = getattr(provider, "provider_config", None) or {}
-                provider_id = str(provider_cfg.get("id") or "").strip()
-            if provider_id and provider_id not in provider_ids:
-                provider_ids.append(provider_id)
-        return provider_ids
-
-    def _sync_optimizer_provider_schema(self) -> None:
-        schema_path = Path(__file__).with_name("_conf_schema.json")
-        if not schema_path.exists():
-            return
-
-        try:
-            schema = json.loads(schema_path.read_text(encoding="utf-8-sig"))
-        except Exception as exc:
-            logger.warning(
-                "[QzoneSelfieBridge] read schema for provider sync failed: %s",
-                exc,
-            )
-            return
-
-        optimizer_field = schema.get("selfie_prompt_optimizer_provider_id")
-        if not isinstance(optimizer_field, dict):
-            return
-
-        provider_options = ["", *self._get_dynamic_chat_provider_ids()]
-        current_value = self.config.selfie_prompt_optimizer_provider_id.strip()
-        if current_value and current_value not in provider_options:
-            provider_options.append(current_value)
-
-        if optimizer_field.get("options") == provider_options:
-            return
-
-        optimizer_field["options"] = provider_options
-        try:
-            schema_path.write_text(
-                json.dumps(schema, ensure_ascii=False, indent=2),
-                encoding="utf-8",
-            )
-            logger.info(
-                "[QzoneSelfieBridge] synced optimizer provider options: %s",
-                provider_options,
-            )
-        except Exception as exc:
-            logger.warning(
-                "[QzoneSelfieBridge] write schema for provider sync failed: %s",
-                exc,
-            )
 
     async def initialize(self):
-        self.life_config_path = self._resolve_existing_path(
-            self.config_dir,
-            "_config.json",
+        self.life_config_path = (
+            self.config_dir / "astrbot_plugin_life_scheduler_config.json"
         )
         self.qzone_config_path = self.config_dir / "astrbot_plugin_qzone_config.json"
         self.gitee_config_path = (
@@ -347,22 +285,13 @@ class QzoneSelfieBridgePlugin(Star):
         self.qzone_config_raw = self._read_json(self.qzone_config_path)
         self.gitee_config_raw = self._read_json(self.gitee_config_path)
 
-        self.life_data_dir = self._resolve_existing_path(
-            self.plugin_data_root,
-            "",
-            mkdir=True,
-        )
+        self.life_data_dir = self.plugin_data_root / "astrbot_plugin_life_scheduler"
+        self.life_data_dir.mkdir(parents=True, exist_ok=True)
         self.life_data_mgr = ScheduleDataManager(
             self.life_data_dir / "schedule_data.json"
         )
         self.life_generator = SchedulerGenerator(
             self.context, self.life_config_raw, self.life_data_mgr
-        )
-        logger.info(
-            "[QzoneSelfieBridge] using life scheduler plugin id=%s config=%s data=%s",
-            self.active_life_plugin_id,
-            self.life_config_path,
-            self.life_data_dir,
         )
 
         self.gitee_data_dir = self.plugin_data_root / "astrbot_plugin_gitee_aiimg"
@@ -381,7 +310,6 @@ class QzoneSelfieBridgePlugin(Star):
         )
         self.refs = ReferenceStore(self.gitee_data_dir)
 
-        self._sync_optimizer_provider_schema()
         self._patch_qzone_publishers()
         self._start_custom_publish_scheduler()
 
@@ -404,7 +332,6 @@ class QzoneSelfieBridgePlugin(Star):
 
     @filter.on_astrbot_loaded()
     async def on_astrbot_loaded(self):
-        self._sync_optimizer_provider_schema()
         self._patch_qzone_publishers()
 
     @filter.on_plugin_loaded()
@@ -453,6 +380,7 @@ class QzoneSelfieBridgePlugin(Star):
     ) -> tuple[Post, str, Path]:
         """统一发布入口，供手动命令和 qzone 接管流程复用。"""
         async with self._publish_lock:
+            await self._ensure_qzone_publish_ready(event=event, origin=origin)
             (
                 caption,
                 publish_images,
@@ -469,6 +397,8 @@ class QzoneSelfieBridgePlugin(Star):
             if qzone_service is not None:
                 post = await self._publish_via_service(
                     qzone_service,
+                    event=event,
+                    origin=origin,
                     caption=caption,
                     publish_images=publish_images,
                     preview_images=preview_images,
@@ -476,6 +406,7 @@ class QzoneSelfieBridgePlugin(Star):
             else:
                 post = await self._publish_direct_to_qzone(
                     event=event,
+                    origin=origin,
                     caption=caption,
                     publish_images=publish_images,
                     preview_images=preview_images,
@@ -595,6 +526,165 @@ class QzoneSelfieBridgePlugin(Star):
                 return sender
         return None
 
+    def _find_qzone_client(self, event: AstrMessageEvent | None = None) -> Any | None:
+        client = getattr(event, "bot", None)
+        if client is not None:
+            return client
+
+        sender = self._find_qzone_sender()
+        client = getattr(getattr(sender, "cfg", None), "client", None)
+        if client is not None:
+            return client
+
+        for plugin in self._iter_qzone_plugins():
+            client = getattr(getattr(plugin, "cfg", None), "client", None)
+            if client is not None:
+                return client
+        return None
+
+    async def _sync_live_qzone_cookies(self, cookies_str: str | None = None) -> None:
+        seen_sessions: set[int] = set()
+        for plugin in self._iter_qzone_plugins():
+            cfg = getattr(plugin, "cfg", None)
+            if cookies_str is not None and cfg is not None and hasattr(cfg, "update_cookies"):
+                try:
+                    cfg.update_cookies(cookies_str)
+                except Exception as exc:
+                    logger.warning(
+                        "[QzoneSelfieBridge] sync qzone plugin cookies failed: %s",
+                        exc,
+                    )
+
+            for session in (
+                getattr(plugin, "session", None),
+                getattr(getattr(plugin, "service", None), "session", None),
+            ):
+                if session is None or id(session) in seen_sessions:
+                    continue
+                seen_sessions.add(id(session))
+                if hasattr(session, "invalidate"):
+                    try:
+                        await session.invalidate()
+                    except Exception as exc:
+                        logger.warning(
+                            "[QzoneSelfieBridge] invalidate qzone session failed: %s",
+                            exc,
+                        )
+
+    @staticmethod
+    def _looks_like_qzone_login_error(message: str) -> bool:
+        text = str(message or "").strip().lower()
+        if not text:
+            return False
+        keywords = ("登录", "失效", "cookie", "skey", "g_tk", "expired", "-100")
+        return any(keyword in text for keyword in keywords)
+
+    async def _refresh_qzone_runtime_cookies(
+        self, qzone_cfg: QzoneRuntimeConfig
+    ) -> str:
+        if qzone_cfg.client is None:
+            raise RuntimeError("当前没有可用 bot client，无法自动刷新 QQ 空间 cookies")
+
+        qzone_cfg.update_cookies("")
+        session = QzoneSession(qzone_cfg)
+        await session.invalidate()
+        await session.login(None)
+        await self._sync_live_qzone_cookies(qzone_cfg.cookies_str)
+        logger.info("[QzoneSelfieBridge] refreshed qzone cookies from bot client")
+        return qzone_cfg.cookies_str
+
+    async def _probe_qzone_ready(self, qzone_cfg: QzoneRuntimeConfig) -> None:
+        session = QzoneSession(qzone_cfg)
+        api = QzoneAPI(session, qzone_cfg)
+        try:
+            resp = await api.get_visitor()
+            if not resp.ok:
+                raise RuntimeError(str(resp.message or resp.code))
+        finally:
+            await api.close()
+
+    async def _ensure_qzone_publish_ready(
+        self,
+        *,
+        event: AstrMessageEvent | None = None,
+        origin: str | None = None,
+    ) -> None:
+        if not self.config.precheck_qzone_before_publish:
+            return
+
+        self.qzone_config_raw = self._read_json(self.qzone_config_path)
+        qzone_cfg = QzoneRuntimeConfig(self.qzone_config_raw, self.qzone_config_path)
+        qzone_cfg.client = self._find_qzone_client(event)
+        refresh_error: Exception | None = None
+
+        if self.config.auto_refresh_qzone_cookies and qzone_cfg.client is not None:
+            try:
+                await self._refresh_qzone_runtime_cookies(qzone_cfg)
+            except Exception as exc:
+                refresh_error = exc
+                logger.warning(
+                    "[QzoneSelfieBridge] qzone cookie refresh failed before publish: origin=%s error=%s",
+                    origin or self.DEFAULT_ORIGIN,
+                    exc,
+                )
+        else:
+            await self._sync_live_qzone_cookies(qzone_cfg.cookies_str)
+
+        try:
+            await self._probe_qzone_ready(qzone_cfg)
+            logger.info(
+                "[QzoneSelfieBridge] qzone precheck passed: origin=%s",
+                origin or self.DEFAULT_ORIGIN,
+            )
+        except Exception as probe_exc:
+            error_text = str(probe_exc)
+            if self._looks_like_qzone_login_error(error_text):
+                try:
+                    qzone_cfg.update_cookies("")
+                    await self._sync_live_qzone_cookies("")
+                except Exception as clear_exc:
+                    logger.warning(
+                        "[QzoneSelfieBridge] clear stale qzone cookies failed: %s",
+                        clear_exc,
+                    )
+                if qzone_cfg.client is not None:
+                    try:
+                        await self._refresh_qzone_runtime_cookies(qzone_cfg)
+                        await self._probe_qzone_ready(qzone_cfg)
+                        logger.info(
+                            "[QzoneSelfieBridge] qzone precheck recovered after clearing stale cookies: origin=%s",
+                            origin or self.DEFAULT_ORIGIN,
+                        )
+                        return
+                    except Exception as retry_exc:
+                        error_text = f"{error_text}；清理后重试仍失败：{retry_exc}"
+
+            detail = error_text
+            if refresh_error is not None:
+                detail = f"{detail}；自动刷新 cookies 失败：{refresh_error}"
+            raise RuntimeError(f"QQ空间登录预检失败：{detail}") from probe_exc
+
+    async def _repair_qzone_login_state(
+        self,
+        *,
+        event: AstrMessageEvent | None = None,
+        origin: str | None = None,
+    ) -> None:
+        self.qzone_config_raw = self._read_json(self.qzone_config_path)
+        qzone_cfg = QzoneRuntimeConfig(self.qzone_config_raw, self.qzone_config_path)
+        qzone_cfg.client = self._find_qzone_client(event)
+        if qzone_cfg.client is None:
+            raise RuntimeError("当前没有可用 bot client，无法自动重新登录 QQ 空间")
+
+        qzone_cfg.update_cookies("")
+        await self._sync_live_qzone_cookies("")
+        await self._refresh_qzone_runtime_cookies(qzone_cfg)
+        await self._probe_qzone_ready(qzone_cfg)
+        logger.info(
+            "[QzoneSelfieBridge] qzone login repaired and revalidated: origin=%s",
+            origin or self.DEFAULT_ORIGIN,
+        )
+
     def _patch_qzone_publishers(self, target_plugin: Any | None = None):
         if not self.config.takeover_qzone_publish:
             return
@@ -654,7 +744,7 @@ class QzoneSelfieBridgePlugin(Star):
             "[QzoneSelfieBridge] custom publish trigger fired: time=%s", time_spec
         )
         try:
-            post, caption, _image_path = await self.publish_selfie_post(
+            post, caption, image_path = await self.publish_selfie_post(
                 origin=f"{self.DEFAULT_ORIGIN}:scheduled:{time_spec}",
             )
             logger.info(
@@ -663,21 +753,13 @@ class QzoneSelfieBridgePlugin(Star):
                 post.tid or "unknown",
                 caption,
             )
-
-            sender = self._find_qzone_sender()
-            client = getattr(getattr(sender, "cfg", None), "client", None)
-            if sender is not None and client is not None:
-                try:
-                    await sender.send_admin_post(
-                        post,
-                        client=client,
-                        message=f"自拍联动定时发说说 {time_spec}",
-                    )
-                except Exception as exc:
-                    logger.warning(
-                        "[QzoneSelfieBridge] custom publish admin notify failed: %s",
-                        exc,
-                    )
+            await self._notify_auto_publish_result(
+                success=True,
+                time_spec=time_spec,
+                post=post,
+                caption=caption,
+                image_path=image_path,
+            )
         except Exception as exc:
             logger.error(
                 "[QzoneSelfieBridge] custom publish failed: time=%s error=%s",
@@ -685,6 +767,104 @@ class QzoneSelfieBridgePlugin(Star):
                 exc,
                 exc_info=True,
             )
+            await self._notify_auto_publish_result(
+                success=False,
+                time_spec=time_spec,
+                error=str(exc),
+            )
+
+    def _resolve_auto_notify_targets(self) -> tuple[tuple[str, ...], tuple[str, ...]]:
+        user_ids = list(self.config.notify_target_users)
+        group_ids = list(self.config.notify_target_groups)
+        if user_ids or group_ids:
+            return tuple(user_ids), tuple(group_ids)
+
+        sender = self._find_qzone_sender()
+        sender_cfg = getattr(sender, "cfg", None)
+        if sender_cfg is None:
+            return (), ()
+
+        manage_group = str(getattr(sender_cfg, "manage_group", "") or "").strip()
+        if manage_group.isdigit() and manage_group not in group_ids:
+            group_ids.append(manage_group)
+
+        for admin_id in getattr(sender_cfg, "admins_id", []) or []:
+            admin_id = str(admin_id).strip()
+            if admin_id.isdigit() and admin_id not in user_ids:
+                user_ids.append(admin_id)
+
+        return tuple(user_ids), tuple(group_ids)
+
+    async def _build_notify_ob_message(
+        self,
+        *,
+        message: str,
+        image_path: Path | None = None,
+    ) -> list[dict]:
+        chain = [Plain(message)]
+        if image_path is not None and image_path.exists():
+            chain.append(CoreImage.fromFileSystem(str(image_path)))
+        return await AiocqhttpMessageEvent._parse_onebot_json(MessageChain(chain))
+
+    async def _notify_auto_publish_result(
+        self,
+        *,
+        success: bool,
+        time_spec: str,
+        post: Post | None = None,
+        caption: str | None = None,
+        image_path: Path | None = None,
+        error: str | None = None,
+    ) -> None:
+        if success and not self.config.notify_on_success:
+            return
+        if not success and not self.config.notify_on_failure:
+            return
+
+        client = self._find_qzone_client()
+        if client is None:
+            logger.warning(
+                "[QzoneSelfieBridge] skip auto publish notify because no client is available"
+            )
+            return
+
+        user_ids, group_ids = self._resolve_auto_notify_targets()
+        if not user_ids and not group_ids:
+            return
+
+        if success:
+            message = (
+                f"定时自拍说说成功 {time_spec}\n"
+                f"TID：{post.tid if post is not None and post.tid else 'unknown'}\n"
+                f"文案：{caption or ''}"
+            )
+        else:
+            message = f"定时自拍说说失败 {time_spec}\n原因：{error or '未知错误'}"
+
+        obmsg = await self._build_notify_ob_message(
+            message=message,
+            image_path=image_path if success else None,
+        )
+
+        for group_id in group_ids:
+            try:
+                await client.send_group_msg(group_id=int(group_id), message=obmsg)
+            except Exception as exc:
+                logger.warning(
+                    "[QzoneSelfieBridge] notify group failed: group=%s error=%s",
+                    group_id,
+                    exc,
+                )
+
+        for user_id in user_ids:
+            try:
+                await client.send_private_msg(user_id=int(user_id), message=obmsg)
+            except Exception as exc:
+                logger.warning(
+                    "[QzoneSelfieBridge] notify user failed: user=%s error=%s",
+                    user_id,
+                    exc,
+                )
 
     async def _get_or_create_schedule(
         self,
@@ -716,104 +896,6 @@ class QzoneSelfieBridgePlugin(Star):
         if data.status != "ok":
             raise RuntimeError("生活日程生成失败。")
         return data
-
-    async def _get_or_create_schedule(
-        self,
-        *,
-        origin: str | None = None,
-        extra: str | None = None,
-    ) -> ScheduleData:
-        today = dt.datetime.now()
-        try:
-            self.life_data_mgr.load()
-        except Exception as exc:
-            logger.warning(
-                "[QzoneSelfieBridge] reload life schedule cache failed: %s", exc
-            )
-
-        data = self.life_data_mgr.get(today)
-        if data and data.status == "ok":
-            return data
-
-        if not self.config.regenerate_life_when_missing:
-            fallback = self._build_schedule_fallback(today)
-            logger.warning(
-                "[QzoneSelfieBridge] today's schedule missing and auto-regeneration disabled, fallback schedule used: %s",
-                fallback,
-            )
-            return fallback
-
-        try:
-            data = await self.life_generator.generate_schedule(
-                today,
-                origin or self.DEFAULT_ORIGIN,
-                extra=extra,
-            )
-        except Exception as exc:
-            fallback = self._build_schedule_fallback(today)
-            logger.warning(
-                "[QzoneSelfieBridge] schedule generation failed, fallback schedule used: error=%s fallback=%s",
-                exc,
-                fallback,
-            )
-            return fallback
-
-        if data.status != "ok":
-            fallback = self._build_schedule_fallback(today, seed=data)
-            logger.warning(
-                "[QzoneSelfieBridge] schedule generation returned non-ok status=%s, fallback schedule used: %s",
-                getattr(data, "status", "unknown"),
-                fallback,
-            )
-            return fallback
-        return data
-
-    def _get_latest_ok_schedule(
-        self,
-        *,
-        exclude_date: str | None = None,
-    ) -> ScheduleData | None:
-        records = self.life_data_mgr.all()
-        for date_str in sorted(records.keys(), reverse=True):
-            if exclude_date and date_str == exclude_date:
-                continue
-            item = records.get(date_str)
-            if item and item.status == "ok":
-                return item
-        return None
-
-    def _build_schedule_fallback(
-        self,
-        current_date: dt.datetime,
-        *,
-        seed: ScheduleData | None = None,
-    ) -> ScheduleData:
-        today_str = current_date.strftime("%Y-%m-%d")
-        latest = self._get_latest_ok_schedule(exclude_date=today_str)
-
-        outfit_style = (
-            (seed.outfit_style if seed and seed.outfit_style else "")
-            or (latest.outfit_style if latest and latest.outfit_style else "")
-            or "自然日常风"
-        )
-        outfit = (
-            (seed.outfit if seed and seed.outfit else "")
-            or (latest.outfit if latest and latest.outfit else "")
-            or "简单舒服的日常穿搭"
-        )
-        schedule = (
-            (seed.schedule if seed and seed.schedule else "")
-            or (latest.schedule if latest and latest.schedule else "")
-            or "今天按自己的节奏慢慢过，顺手记录一下状态。"
-        )
-
-        return ScheduleData(
-            date=today_str,
-            outfit_style=outfit_style,
-            outfit=outfit,
-            schedule=schedule,
-            status="ok",
-        )
 
     def _build_selfie_prompt(
         self, schedule: ScheduleData, extra: str | None = None
@@ -1350,14 +1432,33 @@ class QzoneSelfieBridgePlugin(Star):
         self,
         service: Any,
         *,
+        event: AstrMessageEvent | None = None,
+        origin: str | None = None,
         caption: str,
         publish_images: list[Any],
         preview_images: list[str],
     ) -> Post:
         temp_post = SimpleNamespace(text=caption, images=publish_images)
-        resp = await service.qzone.publish(temp_post)
-        if not resp.ok:
-            raise RuntimeError(f"QQ空间发布失败：{resp.data}")
+
+        async def do_publish() -> Any:
+            resp = await service.qzone.publish(temp_post)
+            if not resp.ok:
+                detail = resp.message or resp.data or resp.code
+                raise RuntimeError(f"QQ空间发布失败：{detail}")
+            return resp
+
+        try:
+            resp = await do_publish()
+        except Exception as exc:
+            if not self._looks_like_qzone_login_error(str(exc)):
+                raise
+            logger.warning(
+                "[QzoneSelfieBridge] qzone publish via service hit login error, retrying once: origin=%s error=%s",
+                origin or self.DEFAULT_ORIGIN,
+                exc,
+            )
+            await self._repair_qzone_login_state(event=event, origin=origin)
+            resp = await do_publish()
 
         uin = await service.session.get_uin()
         name = await service.session.get_nickname()
@@ -1377,31 +1478,47 @@ class QzoneSelfieBridgePlugin(Star):
         self,
         *,
         event: AstrMessageEvent | None,
+        origin: str | None = None,
         caption: str,
         publish_images: list[Any],
         preview_images: list[str],
     ) -> Post:
-        qzone_cfg = QzoneRuntimeConfig(self.qzone_config_raw, self.qzone_config_path)
-        qzone_cfg.client = getattr(event, "bot", None)
-        session = QzoneSession(qzone_cfg)
-        api = QzoneAPI(session, qzone_cfg)
-        try:
-            temp_post = SimpleNamespace(text=caption, images=publish_images)
-            resp = await api.publish(temp_post)
-            if not resp.ok:
-                raise RuntimeError(f"QQ空间发布失败：{resp.data}")
+        async def run_once() -> Post:
+            qzone_cfg = QzoneRuntimeConfig(self.qzone_config_raw, self.qzone_config_path)
+            qzone_cfg.client = self._find_qzone_client(event)
+            session = QzoneSession(qzone_cfg)
+            api = QzoneAPI(session, qzone_cfg)
+            try:
+                temp_post = SimpleNamespace(text=caption, images=publish_images)
+                resp = await api.publish(temp_post)
+                if not resp.ok:
+                    detail = resp.message or resp.data or resp.code
+                    raise RuntimeError(f"QQ空间发布失败：{detail}")
 
-            uin = await session.get_uin()
-            name = await session.get_nickname()
-            post = Post(
-                uin=uin,
-                name=name,
-                text=caption,
-                images=preview_images,
+                uin = await session.get_uin()
+                name = await session.get_nickname()
+                post = Post(
+                    uin=uin,
+                    name=name,
+                    text=caption,
+                    images=preview_images,
+                )
+                post.tid = str(resp.data.get("tid") or "")
+                post.status = "approved"
+                post.create_time = int(resp.data.get("now") or post.create_time)
+                return post
+            finally:
+                await api.close()
+
+        try:
+            return await run_once()
+        except Exception as exc:
+            if not self._looks_like_qzone_login_error(str(exc)):
+                raise
+            logger.warning(
+                "[QzoneSelfieBridge] qzone direct publish hit login error, retrying once: origin=%s error=%s",
+                origin or self.DEFAULT_ORIGIN,
+                exc,
             )
-            post.tid = str(resp.data.get("tid") or "")
-            post.status = "approved"
-            post.create_time = int(resp.data.get("now") or post.create_time)
-            return post
-        finally:
-            await api.close()
+            await self._repair_qzone_login_state(event=event, origin=origin)
+            return await run_once()
