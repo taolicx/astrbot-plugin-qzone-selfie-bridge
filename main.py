@@ -714,6 +714,104 @@ class QzoneSelfieBridgePlugin(Star):
             raise RuntimeError("生活日程生成失败。")
         return data
 
+    async def _get_or_create_schedule(
+        self,
+        *,
+        origin: str | None = None,
+        extra: str | None = None,
+    ) -> ScheduleData:
+        today = dt.datetime.now()
+        try:
+            self.life_data_mgr.load()
+        except Exception as exc:
+            logger.warning(
+                "[QzoneSelfieBridge] reload life schedule cache failed: %s", exc
+            )
+
+        data = self.life_data_mgr.get(today)
+        if data and data.status == "ok":
+            return data
+
+        if not self.config.regenerate_life_when_missing:
+            fallback = self._build_schedule_fallback(today)
+            logger.warning(
+                "[QzoneSelfieBridge] today's schedule missing and auto-regeneration disabled, fallback schedule used: %s",
+                fallback,
+            )
+            return fallback
+
+        try:
+            data = await self.life_generator.generate_schedule(
+                today,
+                origin or self.DEFAULT_ORIGIN,
+                extra=extra,
+            )
+        except Exception as exc:
+            fallback = self._build_schedule_fallback(today)
+            logger.warning(
+                "[QzoneSelfieBridge] schedule generation failed, fallback schedule used: error=%s fallback=%s",
+                exc,
+                fallback,
+            )
+            return fallback
+
+        if data.status != "ok":
+            fallback = self._build_schedule_fallback(today, seed=data)
+            logger.warning(
+                "[QzoneSelfieBridge] schedule generation returned non-ok status=%s, fallback schedule used: %s",
+                getattr(data, "status", "unknown"),
+                fallback,
+            )
+            return fallback
+        return data
+
+    def _get_latest_ok_schedule(
+        self,
+        *,
+        exclude_date: str | None = None,
+    ) -> ScheduleData | None:
+        records = self.life_data_mgr.all()
+        for date_str in sorted(records.keys(), reverse=True):
+            if exclude_date and date_str == exclude_date:
+                continue
+            item = records.get(date_str)
+            if item and item.status == "ok":
+                return item
+        return None
+
+    def _build_schedule_fallback(
+        self,
+        current_date: dt.datetime,
+        *,
+        seed: ScheduleData | None = None,
+    ) -> ScheduleData:
+        today_str = current_date.strftime("%Y-%m-%d")
+        latest = self._get_latest_ok_schedule(exclude_date=today_str)
+
+        outfit_style = (
+            (seed.outfit_style if seed and seed.outfit_style else "")
+            or (latest.outfit_style if latest and latest.outfit_style else "")
+            or "自然日常风"
+        )
+        outfit = (
+            (seed.outfit if seed and seed.outfit else "")
+            or (latest.outfit if latest and latest.outfit else "")
+            or "简单舒服的日常穿搭"
+        )
+        schedule = (
+            (seed.schedule if seed and seed.schedule else "")
+            or (latest.schedule if latest and latest.schedule else "")
+            or "今天按自己的节奏慢慢过，顺手记录一下状态。"
+        )
+
+        return ScheduleData(
+            date=today_str,
+            outfit_style=outfit_style,
+            outfit=outfit,
+            schedule=schedule,
+            status="ok",
+        )
+
     def _build_selfie_prompt(
         self, schedule: ScheduleData, extra: str | None = None
     ) -> str:
