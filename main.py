@@ -267,6 +267,69 @@ class QzoneSelfieBridgePlugin(Star):
             target.mkdir(parents=True, exist_ok=True)
         return target
 
+    def _get_dynamic_chat_provider_ids(self) -> list[str]:
+        provider_ids: list[str] = []
+        try:
+            providers = self.context.get_all_providers()
+        except Exception as exc:
+            logger.warning(
+                "[QzoneSelfieBridge] get providers for schema sync failed: %s",
+                exc,
+            )
+            return provider_ids
+
+        for provider in providers or []:
+            try:
+                provider_id = str(provider.meta().id or "").strip()
+            except Exception:
+                provider_cfg = getattr(provider, "provider_config", None) or {}
+                provider_id = str(provider_cfg.get("id") or "").strip()
+            if provider_id and provider_id not in provider_ids:
+                provider_ids.append(provider_id)
+        return provider_ids
+
+    def _sync_optimizer_provider_schema(self) -> None:
+        schema_path = Path(__file__).with_name("_conf_schema.json")
+        if not schema_path.exists():
+            return
+
+        try:
+            schema = json.loads(schema_path.read_text(encoding="utf-8-sig"))
+        except Exception as exc:
+            logger.warning(
+                "[QzoneSelfieBridge] read schema for provider sync failed: %s",
+                exc,
+            )
+            return
+
+        optimizer_field = schema.get("selfie_prompt_optimizer_provider_id")
+        if not isinstance(optimizer_field, dict):
+            return
+
+        provider_options = ["", *self._get_dynamic_chat_provider_ids()]
+        current_value = self.config.selfie_prompt_optimizer_provider_id.strip()
+        if current_value and current_value not in provider_options:
+            provider_options.append(current_value)
+
+        if optimizer_field.get("options") == provider_options:
+            return
+
+        optimizer_field["options"] = provider_options
+        try:
+            schema_path.write_text(
+                json.dumps(schema, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+            logger.info(
+                "[QzoneSelfieBridge] synced optimizer provider options: %s",
+                provider_options,
+            )
+        except Exception as exc:
+            logger.warning(
+                "[QzoneSelfieBridge] write schema for provider sync failed: %s",
+                exc,
+            )
+
     async def initialize(self):
         self.life_config_path = self._resolve_existing_path(
             self.config_dir,
@@ -315,6 +378,7 @@ class QzoneSelfieBridgePlugin(Star):
         )
         self.refs = ReferenceStore(self.gitee_data_dir)
 
+        self._sync_optimizer_provider_schema()
         self._patch_qzone_publishers()
         self._start_custom_publish_scheduler()
 
@@ -337,6 +401,7 @@ class QzoneSelfieBridgePlugin(Star):
 
     @filter.on_astrbot_loaded()
     async def on_astrbot_loaded(self):
+        self._sync_optimizer_provider_schema()
         self._patch_qzone_publishers()
 
     @filter.on_plugin_loaded()
