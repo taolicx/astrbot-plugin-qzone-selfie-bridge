@@ -4,7 +4,7 @@
 
 这个插件不会重复实现 QQ 空间发布、自拍生成和生活日程三套完整能力，而是把它们串成一条自动发帖流水线：
 
-- 读取 `astrbot_plugin_life_scheduler` 的当天穿搭与日程
+- 读取 `astrbot_plugin_life_scheduler` 或 `astrbot_plugin_life_scheduler_enhanced` 的当天穿搭与日程
 - 调用 `astrbot_plugin_gitee_aiimg` 的自拍参考图与改图链路
 - 生成与自拍相关的短文案
 - 调用 `astrbot_plugin_qzone` 发布带图说说
@@ -24,7 +24,8 @@
 - 支持固定时间自动发自拍说说
 - 支持独立的大模型优化自拍生图提示词
 - 支持固定角色特征注入，例如性别、气质、年龄感
-- 插件启动后会自动把当前 AstrBot 已配置的聊天模型写入优化器下拉选项
+- 插件启动后自动把当前 AstrBot 已配置的聊天模型写入优化器下拉选项
+- 生活日程生成失败时自动回退到最近一次可用日程或默认日程
 
 ## 常用命令
 
