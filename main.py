@@ -76,6 +76,7 @@ except ModuleNotFoundError:
 class BridgeConfig:
     send_preview_to_chat: bool
     regenerate_life_when_missing: bool
+    refresh_life_before_publish: bool
     takeover_qzone_publish: bool
     append_selfie_to_existing_images: bool
     custom_publish_enabled: bool
@@ -133,6 +134,9 @@ class BridgeConfig:
             send_preview_to_chat=bool(data.get("send_preview_to_chat", True)),
             regenerate_life_when_missing=bool(
                 data.get("regenerate_life_when_missing", True)
+            ),
+            refresh_life_before_publish=bool(
+                data.get("refresh_life_before_publish", False)
             ),
             takeover_qzone_publish=bool(data.get("takeover_qzone_publish", True)),
             append_selfie_to_existing_images=bool(
@@ -969,6 +973,22 @@ class QzoneSelfieBridgePlugin(Star):
         except Exception as exc:
             logger.warning(
                 "[QzoneSelfieBridge] reload life schedule cache failed: %s", exc
+            )
+        if self.config.refresh_life_before_publish:
+            logger.info(
+                "[QzoneSelfieBridge] force refresh life schedule before publish: origin=%s",
+                origin or self.DEFAULT_ORIGIN,
+            )
+            data = await self.life_generator.generate_schedule(
+                today,
+                origin or self.DEFAULT_ORIGIN,
+                extra=extra,
+            )
+            if data.status == "ok":
+                return data
+            logger.warning(
+                "[QzoneSelfieBridge] forced life refresh failed, fallback to cached schedule: status=%s",
+                data.status,
             )
         data = self.life_data_mgr.get(today)
         if data and data.status == "ok":
