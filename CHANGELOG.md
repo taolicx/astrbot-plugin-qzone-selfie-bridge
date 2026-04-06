@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.1.10
+
+- 新增 `refresh_life_before_publish` 开关
+- 开启后每次生成自拍前都会先强制刷新一次 `life_scheduler` 的当日推荐、穿搭和日程
+- 强刷失败时会自动回退到当天缓存或原有的缺失补生成逻辑
+
 ## v0.1.9
 
 - 定时任务不再只依赖 `event.bot` 才能拿到 QQ 平台 client
