@@ -9,6 +9,11 @@
     "type": "bool",
     "default": true
   },
+  "refresh_life_before_publish": {
+    "description": "每次生成自拍前，是否先强制刷新一次今日推荐、穿搭和日程",
+    "type": "bool",
+    "default": false
+  },
   "takeover_qzone_publish": {
     "description": "是否自动接管 qzone 插件自己的发说说、LLM 发帖和定时发帖流程",
     "type": "bool",
