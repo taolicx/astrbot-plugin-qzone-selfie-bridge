@@ -628,9 +628,18 @@ class QzoneSelfieBridgePlugin(Star):
         session = QzoneSession(qzone_cfg)
         api = QzoneAPI(session, qzone_cfg)
         try:
-            resp = await api.get_visitor()
+            # 预检只想识别“登录态是否明显失效”，不应该因为 visitor 接口自身参数问题误判失败。
+            # 先走 session.get_ctx() 确认 cookies / uin / gtk 能正常建立，再用近期动态接口做轻量探测。
+            await session.get_ctx()
+            resp = await api.get_recent_feeds(page=1)
             if not resp.ok:
-                raise RuntimeError(str(resp.message or resp.code))
+                detail = str(resp.message or resp.code)
+                if self._looks_like_qzone_login_error(detail):
+                    raise RuntimeError(detail)
+                logger.warning(
+                    "[QzoneSelfieBridge] qzone precheck got non-login error, continue anyway: %s",
+                    detail,
+                )
         finally:
             await api.close()
 
@@ -693,7 +702,12 @@ class QzoneSelfieBridgePlugin(Star):
             detail = error_text
             if refresh_error is not None:
                 detail = f"{detail}；自动刷新 cookies 失败：{refresh_error}"
-            raise RuntimeError(f"QQ空间登录预检失败：{detail}") from probe_exc
+            logger.warning(
+                "[QzoneSelfieBridge] qzone precheck skipped hard failure because error is not login-related: origin=%s error=%s",
+                origin or self.DEFAULT_ORIGIN,
+                detail,
+            )
+            return
 
     async def _repair_qzone_login_state(
         self,
