@@ -1,6 +1,6 @@
 name: astrbot_plugin_qzone_selfie_bridge
 display_name: QQ空间自拍联动
 desc: 串联 life_scheduler、gitee_aiimg 与 qzone，在发说说时自动生成自拍图与相关文案
-version: v0.1.6
+version: v0.1.7
 author: taolicx
 repo: "https://github.com/taolicx/astrbot-plugin-qzone-selfie-bridge"
