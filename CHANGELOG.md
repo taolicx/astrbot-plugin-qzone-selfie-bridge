@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.1.11
+
+- 修复新安装后“自拍提示词优化器 API”下拉仍然为空的问题
+- 插件启动时除了读取运行中的聊天 Provider，也会在必要时直接从 `cmd_config.json` 回填聊天模型列表
+- 在 `initialize`、`on_astrbot_loaded` 和 `on_plugin_loaded` 阶段都会刷新一次配置页下拉，减少首次安装时的时序问题
+
 ## v0.1.10
 
 - 新增 `refresh_life_before_publish` 开关
