@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.1.9
+
+- 定时任务不再只依赖 `event.bot` 才能拿到 QQ 平台 client
+- 新增从 AstrBot 平台实例 `get_client()` 回退获取 OneBot client 的逻辑
+- 获取到 live client 后会主动绑定回已加载的 qzone 插件 `cfg.client / sender.cfg.client`
+- 修复定时发布时“当前没有可用 bot client，无法自动重新登录 QQ 空间”导致无法自动恢复 cookies 的问题
+
 ## v0.1.8
 
 - 不再使用 `get_visitor()` 作为 QQ 空间登录预检探针，改为先建立 session 再探测近期动态接口
