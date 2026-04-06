@@ -38,12 +38,38 @@ from astrbot_plugin_gitee_aiimg.core.image_manager import ImageManager
 from astrbot_plugin_gitee_aiimg.core.provider_registry import ProviderRegistry
 from astrbot_plugin_gitee_aiimg.core.ref_store import ReferenceStore
 from astrbot_plugin_gitee_aiimg.core.utils import close_session, get_images_from_event
-from astrbot_plugin_life_scheduler.core.data import ScheduleData, ScheduleDataManager
-from astrbot_plugin_life_scheduler.core.generator import SchedulerGenerator
 from astrbot_plugin_qzone.core.model import Post
 from astrbot_plugin_qzone.core.qzone.api import QzoneAPI
 from astrbot_plugin_qzone.core.qzone.session import QzoneSession
 from astrbot_plugin_qzone.core.qzone.utils import download_file as download_remote_image
+
+LIFE_PLUGIN_ID = ""
+
+try:
+    # 优先兼容增强版。它在 GitHub 安装场景下通常使用根模块结构。
+    from astrbot_plugin_life_scheduler_enhanced.data import (
+        ScheduleData,
+        ScheduleDataManager,
+    )
+    from astrbot_plugin_life_scheduler_enhanced.generator import SchedulerGenerator
+
+    LIFE_PLUGIN_ID = "astrbot_plugin_life_scheduler_enhanced"
+except ModuleNotFoundError:
+    try:
+        # 兼容原版 life_scheduler 的 core 结构。
+        from astrbot_plugin_life_scheduler.core.data import (
+            ScheduleData,
+            ScheduleDataManager,
+        )
+        from astrbot_plugin_life_scheduler.core.generator import SchedulerGenerator
+
+        LIFE_PLUGIN_ID = "astrbot_plugin_life_scheduler"
+    except ModuleNotFoundError:
+        # 某些打包方式会把原版 life_scheduler 平铺到根目录。
+        from astrbot_plugin_life_scheduler.data import ScheduleData, ScheduleDataManager
+        from astrbot_plugin_life_scheduler.generator import SchedulerGenerator
+
+        LIFE_PLUGIN_ID = "astrbot_plugin_life_scheduler"
 
 
 @dataclass(slots=True)
@@ -273,9 +299,8 @@ class QzoneSelfieBridgePlugin(Star):
         self._custom_publish_scheduler: DailySelfiePublishScheduler | None = None
 
     async def initialize(self):
-        self.life_config_path = (
-            self.config_dir / "astrbot_plugin_life_scheduler_config.json"
-        )
+        self.life_plugin_id = LIFE_PLUGIN_ID
+        self.life_config_path = self.config_dir / f"{self.life_plugin_id}_config.json"
         self.qzone_config_path = self.config_dir / "astrbot_plugin_qzone_config.json"
         self.gitee_config_path = (
             self.config_dir / "astrbot_plugin_gitee_aiimg_config.json"
@@ -285,13 +310,19 @@ class QzoneSelfieBridgePlugin(Star):
         self.qzone_config_raw = self._read_json(self.qzone_config_path)
         self.gitee_config_raw = self._read_json(self.gitee_config_path)
 
-        self.life_data_dir = self.plugin_data_root / "astrbot_plugin_life_scheduler"
+        self.life_data_dir = self.plugin_data_root / self.life_plugin_id
         self.life_data_dir.mkdir(parents=True, exist_ok=True)
         self.life_data_mgr = ScheduleDataManager(
             self.life_data_dir / "schedule_data.json"
         )
         self.life_generator = SchedulerGenerator(
             self.context, self.life_config_raw, self.life_data_mgr
+        )
+        logger.info(
+            "[QzoneSelfieBridge] use life scheduler plugin id=%s config=%s data=%s",
+            self.life_plugin_id,
+            self.life_config_path,
+            self.life_data_dir,
         )
 
         self.gitee_data_dir = self.plugin_data_root / "astrbot_plugin_gitee_aiimg"
