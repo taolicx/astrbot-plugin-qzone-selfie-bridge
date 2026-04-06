@@ -557,6 +557,48 @@ class QzoneSelfieBridgePlugin(Star):
                 return sender
         return None
 
+    def _iter_platform_clients(self) -> Iterable[Any]:
+        platform_manager = getattr(self.context, "platform_manager", None)
+        platform_insts = getattr(platform_manager, "platform_insts", None)
+        if not isinstance(platform_insts, list):
+            return
+
+        for platform in platform_insts:
+            get_client = getattr(platform, "get_client", None)
+            if not callable(get_client):
+                continue
+            try:
+                client = get_client()
+            except Exception as exc:
+                logger.warning(
+                    "[QzoneSelfieBridge] get platform client failed: %s",
+                    exc,
+                )
+                continue
+            if client is not None:
+                yield client
+
+    async def _bind_qzone_client(self, client: Any | None) -> Any | None:
+        if client is None:
+            return None
+
+        bound = False
+        for plugin in self._iter_qzone_plugins():
+            cfg = getattr(plugin, "cfg", None)
+            if cfg is not None and getattr(cfg, "client", None) is None:
+                setattr(cfg, "client", client)
+                bound = True
+
+            sender = getattr(plugin, "sender", None)
+            sender_cfg = getattr(sender, "cfg", None)
+            if sender_cfg is not None and getattr(sender_cfg, "client", None) is None:
+                setattr(sender_cfg, "client", client)
+                bound = True
+
+        if bound:
+            logger.info("[QzoneSelfieBridge] bound live bot client into qzone plugin")
+        return client
+
     def _find_qzone_client(self, event: AstrMessageEvent | None = None) -> Any | None:
         client = getattr(event, "bot", None)
         if client is not None:
@@ -571,6 +613,8 @@ class QzoneSelfieBridgePlugin(Star):
             client = getattr(getattr(plugin, "cfg", None), "client", None)
             if client is not None:
                 return client
+        for client in self._iter_platform_clients():
+            return client
         return None
 
     async def _sync_live_qzone_cookies(self, cookies_str: str | None = None) -> None:
@@ -654,7 +698,7 @@ class QzoneSelfieBridgePlugin(Star):
 
         self.qzone_config_raw = self._read_json(self.qzone_config_path)
         qzone_cfg = QzoneRuntimeConfig(self.qzone_config_raw, self.qzone_config_path)
-        qzone_cfg.client = self._find_qzone_client(event)
+        qzone_cfg.client = await self._bind_qzone_client(self._find_qzone_client(event))
         refresh_error: Exception | None = None
 
         if self.config.auto_refresh_qzone_cookies and qzone_cfg.client is not None:
@@ -717,7 +761,7 @@ class QzoneSelfieBridgePlugin(Star):
     ) -> None:
         self.qzone_config_raw = self._read_json(self.qzone_config_path)
         qzone_cfg = QzoneRuntimeConfig(self.qzone_config_raw, self.qzone_config_path)
-        qzone_cfg.client = self._find_qzone_client(event)
+        qzone_cfg.client = await self._bind_qzone_client(self._find_qzone_client(event))
         if qzone_cfg.client is None:
             raise RuntimeError("当前没有可用 bot client，无法自动重新登录 QQ 空间")
 
