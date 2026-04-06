@@ -57,3 +57,4 @@
 
 - 这个仓库版本已经兼容 AstrBot 通过 GitHub 仓库直接安装
 - 如需稳定安装，建议优先使用 release 版本
+- 插件会自动兼容 `astrbot_plugin_life_scheduler` 和 `astrbot_plugin_life_scheduler_enhanced`，并按实际安装版本切换配置文件与数据目录
