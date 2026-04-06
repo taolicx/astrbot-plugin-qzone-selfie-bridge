@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.1.8
+
+- 不再使用 `get_visitor()` 作为 QQ 空间登录预检探针，改为先建立 session 再探测近期动态接口
+- `参数错误` 这类非登录类预检异常现在只记警告，不再阻断整条自动发布
+- 登录失效仍会继续走原有的清 cookie、刷新 cookie、重试预检与发布重试逻辑
+
 ## v0.1.7
 
 - 修复仅安装 `astrbot_plugin_life_scheduler_enhanced` 时，桥接插件在导入阶段仍写死原版模块名导致加载失败的问题
