@@ -345,6 +345,7 @@ class QzoneSelfieBridgePlugin(Star):
         )
         self.refs = ReferenceStore(self.gitee_data_dir)
 
+        self._refresh_optimizer_provider_schema_options()
         self._patch_qzone_publishers()
         self._start_custom_publish_scheduler()
 
@@ -367,10 +368,12 @@ class QzoneSelfieBridgePlugin(Star):
 
     @filter.on_astrbot_loaded()
     async def on_astrbot_loaded(self):
+        self._refresh_optimizer_provider_schema_options()
         self._patch_qzone_publishers()
 
     @filter.on_plugin_loaded()
     async def on_plugin_loaded(self, metadata: StarMetadata):
+        self._refresh_optimizer_provider_schema_options()
         self._patch_qzone_publishers(metadata.star_cls if metadata else None)
 
     @filter.permission_type(filter.PermissionType.ADMIN)
@@ -535,6 +538,102 @@ class QzoneSelfieBridgePlugin(Star):
         if not path.exists():
             raise FileNotFoundError(f"缺少配置文件：{path}")
         return json.loads(path.read_text(encoding="utf-8-sig"))
+
+    def _refresh_optimizer_provider_schema_options(self) -> None:
+        schema_path = Path(__file__).with_name("_conf_schema.json")
+        if not schema_path.exists():
+            return
+
+        provider_ids: list[str] = [""]
+
+        try:
+            providers = self.context.get_all_providers()
+        except Exception as exc:
+            logger.warning(
+                "[QzoneSelfieBridge] get providers for schema refresh failed: %s",
+                exc,
+            )
+            providers = []
+
+        for provider in providers or []:
+            provider_cfg = getattr(provider, "provider_config", None)
+            if not isinstance(provider_cfg, dict):
+                continue
+            provider_id = str(provider_cfg.get("id") or "").strip()
+            if not provider_id or provider_id in provider_ids:
+                continue
+            provider_ids.append(provider_id)
+
+        if len(provider_ids) == 1:
+            cmd_config_path = self.data_root / "cmd_config.json"
+            try:
+                cmd_config = json.loads(cmd_config_path.read_text(encoding="utf-8-sig"))
+            except Exception as exc:
+                logger.warning(
+                    "[QzoneSelfieBridge] load cmd_config for schema refresh failed: %s",
+                    exc,
+                )
+            else:
+                for provider_cfg in cmd_config.get("provider", []):
+                    if not isinstance(provider_cfg, dict):
+                        continue
+                    provider_id = str(provider_cfg.get("id") or "").strip()
+                    if not provider_id or provider_id in provider_ids:
+                        continue
+                    provider_ids.append(provider_id)
+
+        try:
+            schema = json.loads(schema_path.read_text(encoding="utf-8-sig"))
+        except Exception as exc:
+            logger.warning(
+                "[QzoneSelfieBridge] load schema for provider refresh failed: %s",
+                exc,
+            )
+            return
+
+        field = schema.get("selfie_prompt_optimizer_provider_id")
+        if not isinstance(field, dict):
+            return
+
+        schema_changed = field.get("options") != provider_ids
+        if schema_changed:
+            field["options"] = provider_ids
+
+        if schema_changed:
+            try:
+                schema_path.write_text(
+                    json.dumps(schema, ensure_ascii=False, indent=2) + "\n",
+                    encoding="utf-8",
+                )
+            except Exception as exc:
+                logger.warning(
+                    "[QzoneSelfieBridge] write schema provider options failed: %s",
+                    exc,
+                )
+
+        live_schema_updated = False
+        for metadata in star_registry:
+            if metadata.star_cls is not self:
+                continue
+            plugin_config = getattr(metadata, "config", None)
+            live_schema = getattr(plugin_config, "schema", None)
+            if not isinstance(live_schema, dict):
+                break
+            live_field = live_schema.get("selfie_prompt_optimizer_provider_id")
+            if not isinstance(live_field, dict):
+                break
+            if live_field.get("options") != provider_ids:
+                live_field["options"] = list(provider_ids)
+                live_schema_updated = True
+            break
+
+        if schema_changed or live_schema_updated:
+            logger.info(
+                "[QzoneSelfieBridge] refreshed optimizer provider options: count=%s source=%s live_schema=%s",
+                len(provider_ids) - 1,
+                "runtime" if len(providers or []) > 0 else "cmd_config",
+                live_schema_updated,
+            )
 
     def _iter_qzone_plugins(self) -> Iterable[Any]:
         for metadata in star_registry:
