@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import datetime as dt
+import inspect
 import json
 import re
 import sys
@@ -1173,7 +1174,7 @@ class QzoneSelfieBridgePlugin(Star):
             f"今天以 {outfit_style} 为主线，早晚层次不同，出门阶段更完整利落，回家后换成更舒服的状态。"
         )
         schedule = "这一天从早上整理状态开始，白天处理工作或学习，傍晚收尾回家，晚上把节奏放慢下来。"
-        fallback = ScheduleData(
+        fallback = self._build_schedule_data_compat(
             date=anchor_dt.strftime("%Y-%m-%d"),
             anchor_time=anchor_time[:5],
             window_start=anchor_dt.isoformat(timespec="seconds"),
@@ -1218,6 +1219,34 @@ class QzoneSelfieBridgePlugin(Star):
             schedule=schedule,
             status="ok",
         )
+
+    @staticmethod
+    def _build_schedule_data_compat(**kwargs) -> ScheduleData:
+        """兼容新旧版 life_scheduler 的 ScheduleData 构造参数差异。"""
+        try:
+            accepted = {
+                name
+                for name in inspect.signature(ScheduleData).parameters
+                if name != "self"
+            }
+            filtered = {key: value for key, value in kwargs.items() if key in accepted}
+            return ScheduleData(**filtered)
+        except (TypeError, ValueError):
+            pending = dict(kwargs)
+            while True:
+                try:
+                    return ScheduleData(**pending)
+                except TypeError as exc:
+                    match = re.search(
+                        r"unexpected keyword argument ['\"]([^'\"]+)['\"]",
+                        str(exc),
+                    )
+                    if not match:
+                        raise
+                    bad_key = match.group(1)
+                    if bad_key not in pending:
+                        raise
+                    pending.pop(bad_key, None)
 
     def _resolve_life_cycle_anchor(self, moment: dt.datetime, anchor_time: str) -> dt.datetime:
         parts = [int(part) for part in str(anchor_time or "07:00").split(":")[:2]]
