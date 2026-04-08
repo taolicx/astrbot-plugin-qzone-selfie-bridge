@@ -1094,6 +1094,11 @@ class QzoneSelfieBridgePlugin(Star):
 
         data = self.life_data_mgr.get(today)
         if self._schedule_is_publishable(data):
+            logger.info(
+                "[QzoneSelfieBridge] reuse current fixed life window for publish: origin=%s date=%s",
+                origin or self.DEFAULT_ORIGIN,
+                getattr(data, "date", ""),
+            )
             return self._coerce_schedule_for_publish(today, data)
 
         if self.config.refresh_life_before_publish:
@@ -1214,6 +1219,39 @@ class QzoneSelfieBridgePlugin(Star):
                 return segment
         return None
 
+    @staticmethod
+    def _segment_attr_text(segment: Any, name: str) -> str:
+        return str(getattr(segment, name, "") or "").strip() if segment else ""
+
+    def _compose_segment_outfit_detail(self, segment: Any, fallback_outfit: str) -> str:
+        if segment and hasattr(segment, "outfit_detail_text"):
+            text = str(segment.outfit_detail_text() or "").strip()
+            if text:
+                return text
+        parts = [
+            self._segment_attr_text(segment, "outfit"),
+            f"上装{self._segment_attr_text(segment, 'outfit_top')}" if self._segment_attr_text(segment, "outfit_top") else "",
+            f"下装{self._segment_attr_text(segment, 'outfit_bottom')}" if self._segment_attr_text(segment, "outfit_bottom") else "",
+            f"外搭{self._segment_attr_text(segment, 'outfit_outerwear')}" if self._segment_attr_text(segment, "outfit_outerwear") else "",
+            f"鞋履{self._segment_attr_text(segment, 'outfit_shoes')}" if self._segment_attr_text(segment, "outfit_shoes") else "",
+            f"配饰{self._segment_attr_text(segment, 'outfit_accessories')}" if self._segment_attr_text(segment, "outfit_accessories") else "",
+        ]
+        text = "，".join([item for item in parts if item])
+        return text or fallback_outfit
+
+    def _compose_segment_visual_detail(self, segment: Any) -> str:
+        if segment and hasattr(segment, "selfie_visual_text"):
+            text = str(segment.selfie_visual_text() or "").strip()
+            if text:
+                return text
+        parts = [
+            f"发型{self._segment_attr_text(segment, 'hairstyle')}" if self._segment_attr_text(segment, "hairstyle") else "",
+            f"妆面{self._segment_attr_text(segment, 'makeup')}" if self._segment_attr_text(segment, "makeup") else "",
+            f"姿态{self._segment_attr_text(segment, 'selfie_pose')}" if self._segment_attr_text(segment, "selfie_pose") else "",
+            f"光线{self._segment_attr_text(segment, 'selfie_lighting')}" if self._segment_attr_text(segment, "selfie_lighting") else "",
+        ]
+        return "，".join([item for item in parts if item])
+
     def _build_segment_prompt_context(self, schedule: ScheduleData) -> dict[str, str]:
         segment = self._get_active_schedule_segment(schedule)
         return {
@@ -1228,6 +1266,168 @@ class QzoneSelfieBridgePlugin(Star):
             "segment_selfie_prompt_hint": getattr(segment, "selfie_prompt_hint", "") or "",
             "segment_caption_hint": getattr(segment, "caption_hint", "") or "",
         }
+
+    def _build_segment_runtime_context(self, schedule: ScheduleData) -> dict[str, str]:
+        segment = self._get_active_schedule_segment(schedule)
+        segment_outfit = self._compose_segment_outfit_detail(
+            segment,
+            getattr(schedule, "outfit", "") or "日常穿搭",
+        )
+        segment_visual = self._compose_segment_visual_detail(segment)
+        return {
+            "segment_label": self._segment_attr_text(segment, "label") or "当前时段",
+            "segment_start_time": self._segment_attr_text(segment, "start_time"),
+            "segment_end_time": self._segment_attr_text(segment, "end_time"),
+            "segment_outfit": segment_outfit,
+            "segment_activity": self._segment_attr_text(segment, "activity") or getattr(schedule, "schedule", "") or "按计划生活",
+            "segment_location": self._segment_attr_text(segment, "location") or "日常活动场景",
+            "segment_mood": self._segment_attr_text(segment, "mood") or "自然放松",
+            "segment_selfie_scene": self._segment_attr_text(segment, "selfie_scene") or "自然生活自拍",
+            "segment_selfie_prompt_hint": self._segment_attr_text(segment, "selfie_prompt_hint"),
+            "segment_caption_hint": self._segment_attr_text(segment, "caption_hint"),
+            "segment_outfit_top": self._segment_attr_text(segment, "outfit_top"),
+            "segment_outfit_bottom": self._segment_attr_text(segment, "outfit_bottom"),
+            "segment_outfit_outerwear": self._segment_attr_text(segment, "outfit_outerwear"),
+            "segment_outfit_shoes": self._segment_attr_text(segment, "outfit_shoes"),
+            "segment_outfit_accessories": self._segment_attr_text(segment, "outfit_accessories"),
+            "segment_hairstyle": self._segment_attr_text(segment, "hairstyle"),
+            "segment_makeup": self._segment_attr_text(segment, "makeup"),
+            "segment_selfie_pose": self._segment_attr_text(segment, "selfie_pose"),
+            "segment_selfie_lighting": self._segment_attr_text(segment, "selfie_lighting"),
+            "segment_visual_detail": segment_visual,
+        }
+
+    def _build_segment_directive_text(self, schedule: ScheduleData) -> str:
+        segment_ctx = self._build_segment_runtime_context(schedule)
+        lines = [
+            "【当前固定日程窗口】",
+            f"- 生效窗口：{getattr(schedule, 'window_start', '')} ~ {getattr(schedule, 'window_end', '')}",
+            f"- 当前时段：{segment_ctx['segment_label']} ({segment_ctx['segment_start_time']}-{segment_ctx['segment_end_time']})",
+            f"- 本时段活动：{segment_ctx['segment_activity']}",
+            f"- 本时段地点：{segment_ctx['segment_location']}",
+            f"- 本时段情绪：{segment_ctx['segment_mood']}",
+            f"- 本时段穿搭：{segment_ctx['segment_outfit']}",
+            f"- 自拍场景：{segment_ctx['segment_selfie_scene']}",
+        ]
+        if segment_ctx["segment_visual_detail"]:
+            lines.append(f"- 外观细节：{segment_ctx['segment_visual_detail']}")
+        if segment_ctx["segment_selfie_prompt_hint"]:
+            lines.append(f"- 自拍补充要求：{segment_ctx['segment_selfie_prompt_hint']}")
+        lines.append("- 改图必须严格围绕当前时段，不要把全天不同阶段混成同一套穿搭或场景。")
+        return "\n".join(lines)
+
+    def _build_caption_directive_text(self, schedule: ScheduleData) -> str:
+        segment_ctx = self._build_segment_runtime_context(schedule)
+        lines = [
+            "【当前发说说时段】",
+            f"- 当前时段：{segment_ctx['segment_label']}",
+            f"- 当前活动：{segment_ctx['segment_activity']}",
+            f"- 当前地点：{segment_ctx['segment_location']}",
+            f"- 当前情绪：{segment_ctx['segment_mood']}",
+            f"- 当前自拍状态：{segment_ctx['segment_selfie_scene']}",
+            f"- 当前穿搭：{segment_ctx['segment_outfit']}",
+            "- 文案必须只围绕当前时段状态来写，不要写成全天总结。",
+        ]
+        if segment_ctx["segment_caption_hint"]:
+            lines.append(f"- 文案口吻提示：{segment_ctx['segment_caption_hint']}")
+        return "\n".join(lines)
+
+    def _build_time_segmented_selfie_prompt(
+        self, schedule: ScheduleData, extra: str | None = None
+    ) -> str:
+        segment_ctx = self._build_segment_runtime_context(schedule)
+        character_traits = self.config.selfie_character_traits.strip()
+        character_traits_block = (
+            f"额外角色特征：{character_traits}。"
+            if character_traits
+            else ""
+        )
+        prompt = self.config.selfie_prompt_template.format(
+            outfit_style=schedule.outfit_style or "自然日常风",
+            outfit=segment_ctx["segment_outfit"],
+            schedule=segment_ctx["segment_activity"],
+            summary_outfit=getattr(schedule, "summary_outfit", "") or schedule.outfit or "日常穿搭",
+            summary_schedule=getattr(schedule, "summary_schedule", "") or schedule.schedule or "按计划生活",
+            segment_label=segment_ctx["segment_label"],
+            segment_start_time=segment_ctx["segment_start_time"],
+            segment_end_time=segment_ctx["segment_end_time"],
+            segment_outfit=segment_ctx["segment_outfit"],
+            segment_activity=segment_ctx["segment_activity"],
+            segment_location=segment_ctx["segment_location"],
+            segment_mood=segment_ctx["segment_mood"],
+            selfie_scene=segment_ctx["segment_selfie_scene"],
+            selfie_prompt_hint=segment_ctx["segment_selfie_prompt_hint"],
+            caption_hint=segment_ctx["segment_caption_hint"],
+            character_traits=character_traits,
+            character_traits_block=character_traits_block,
+            extra=(extra or "").strip(),
+        ).strip()
+        return f"{prompt}\n\n{self._build_segment_directive_text(schedule)}".strip()
+
+    async def _generate_time_segmented_caption(
+        self,
+        *,
+        schedule: ScheduleData,
+        selfie_prompt: str,
+        extra: str | None = None,
+        origin: str | None = None,
+    ) -> str:
+        segment_ctx = self._build_segment_runtime_context(schedule)
+        outfit_style = schedule.outfit_style or "自然日常风"
+        outfit = segment_ctx["segment_outfit"]
+        day_schedule = segment_ctx["segment_activity"]
+        prompt = self.config.caption_prompt_template.format(
+            outfit_style=outfit_style,
+            outfit=outfit,
+            schedule=day_schedule,
+            summary_outfit=getattr(schedule, "summary_outfit", "") or schedule.outfit or "日常穿搭",
+            summary_schedule=getattr(schedule, "summary_schedule", "") or schedule.schedule or "按计划生活",
+            segment_label=segment_ctx["segment_label"],
+            segment_start_time=segment_ctx["segment_start_time"],
+            segment_end_time=segment_ctx["segment_end_time"],
+            segment_outfit=segment_ctx["segment_outfit"],
+            segment_activity=segment_ctx["segment_activity"],
+            segment_location=segment_ctx["segment_location"],
+            segment_mood=segment_ctx["segment_mood"],
+            selfie_scene=segment_ctx["segment_selfie_scene"],
+            selfie_prompt_hint=segment_ctx["segment_selfie_prompt_hint"],
+            caption_hint=segment_ctx["segment_caption_hint"],
+            selfie_prompt=selfie_prompt,
+            extra=(extra or "").strip(),
+        )
+        prompt = f"{prompt}\n\n{self._build_caption_directive_text(schedule)}"
+        fallback = self.config.fallback_caption_template.format(
+            outfit_style=outfit_style,
+            outfit=outfit,
+            schedule=day_schedule,
+            summary_outfit=getattr(schedule, "summary_outfit", "") or schedule.outfit or "日常穿搭",
+            summary_schedule=getattr(schedule, "summary_schedule", "") or schedule.schedule or "按计划生活",
+            segment_label=segment_ctx["segment_label"],
+            segment_start_time=segment_ctx["segment_start_time"],
+            segment_end_time=segment_ctx["segment_end_time"],
+            segment_outfit=segment_ctx["segment_outfit"],
+            segment_activity=segment_ctx["segment_activity"],
+            segment_location=segment_ctx["segment_location"],
+            segment_mood=segment_ctx["segment_mood"],
+            selfie_scene=segment_ctx["segment_selfie_scene"],
+            selfie_prompt_hint=segment_ctx["segment_selfie_prompt_hint"],
+            caption_hint=segment_ctx["segment_caption_hint"],
+        ).strip()
+
+        provider = self._get_provider(origin)
+        if provider:
+            session_id = f"qzone_selfie_caption_{int(dt.datetime.now().timestamp())}"
+            try:
+                resp = await provider.text_chat(prompt, session_id=session_id)
+                text = self._extract_completion_text(resp)
+                if text:
+                    return self._normalize_caption_text(text, fallback)
+            except Exception as exc:
+                logger.warning("[QzoneSelfieBridge] caption llm failed: %s", exc)
+            finally:
+                await self._cleanup_temp_session(session_id)
+
+        return self._normalize_caption_text("", fallback)
 
     def _build_selfie_prompt(
         self, schedule: ScheduleData, extra: str | None = None
@@ -1807,7 +2007,7 @@ class QzoneSelfieBridgePlugin(Star):
         original_images: list[Any] | None = None,
     ) -> tuple[str, list[Any], list[str], Path]:
         schedule = await self._get_or_create_schedule(origin=origin, extra=extra)
-        selfie_prompt = self._build_selfie_prompt(schedule, extra)
+        selfie_prompt = self._build_time_segmented_selfie_prompt(schedule, extra)
         optimized_selfie_prompt = await self._optimize_selfie_prompt(
             base_prompt=selfie_prompt,
             schedule=schedule,
@@ -1819,7 +2019,7 @@ class QzoneSelfieBridgePlugin(Star):
             event=event,
             original_images=original_images,
         )
-        caption = await self._generate_caption(
+        caption = await self._generate_time_segmented_caption(
             schedule=schedule,
             selfie_prompt=selfie_prompt,
             extra=extra,
