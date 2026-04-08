@@ -323,7 +323,10 @@ class QzoneSelfieBridgePlugin(Star):
         self.life_data_dir = self.plugin_data_root / self.life_plugin_id
         self.life_data_dir.mkdir(parents=True, exist_ok=True)
         self.life_data_mgr = ScheduleDataManager(
-            self.life_data_dir / "schedule_data.json"
+            self.life_data_dir / "schedule_data.json",
+            anchor_time_provider=lambda: str(
+                self.life_config_raw.get("schedule_time") or "07:00"
+            ),
         )
         self.life_generator = SchedulerGenerator(
             self.context, self.life_config_raw, self.life_data_mgr
@@ -1082,17 +1085,20 @@ class QzoneSelfieBridgePlugin(Star):
         extra: str | None = None,
     ) -> ScheduleData:
         today = dt.datetime.now()
-        # Reload shared life-scheduler data on each publish so manual rewrites
-        # from the sibling plugin are visible without restarting AstrBot.
         try:
             self.life_data_mgr.load()
         except Exception as exc:
             logger.warning(
                 "[QzoneSelfieBridge] reload life schedule cache failed: %s", exc
             )
+
+        data = self.life_data_mgr.get(today)
+        if self._schedule_is_publishable(data):
+            return self._coerce_schedule_for_publish(today, data)
+
         if self.config.refresh_life_before_publish:
             logger.info(
-                "[QzoneSelfieBridge] force refresh life schedule before publish: origin=%s",
+                "[QzoneSelfieBridge] current life schedule missing or invalid, regenerate current fixed window: origin=%s",
                 origin or self.DEFAULT_ORIGIN,
             )
             data = await self.life_generator.generate_schedule(
@@ -1103,12 +1109,9 @@ class QzoneSelfieBridgePlugin(Star):
             if self._schedule_is_publishable(data):
                 return self._coerce_schedule_for_publish(today, data)
             logger.warning(
-                "[QzoneSelfieBridge] forced life refresh failed, fallback to cached schedule: status=%s",
-                data.status,
+                "[QzoneSelfieBridge] forced life refresh failed, fallback to bridge local schedule: status=%s",
+                getattr(data, "status", "unknown"),
             )
-        data = self.life_data_mgr.get(today)
-        if self._schedule_is_publishable(data):
-            return self._coerce_schedule_for_publish(today, data)
 
         if not self.config.regenerate_life_when_missing:
             return self._coerce_schedule_for_publish(today, data)
@@ -1123,12 +1126,12 @@ class QzoneSelfieBridgePlugin(Star):
     def _schedule_is_publishable(self, data: ScheduleData | None) -> bool:
         if not data:
             return False
-        if (getattr(data, "status", "") or "").strip().lower() == "ok":
-            return True
         outfit = (getattr(data, "outfit", "") or "").strip()
         schedule = (getattr(data, "schedule", "") or "").strip()
         if not outfit or not schedule:
             return False
+        if (getattr(data, "status", "") or "").strip().lower() == "ok":
+            return True
         placeholders = ("生成失败", "failed", "error")
         lowered = f"{outfit}\n{schedule}".lower()
         return not any(marker in lowered for marker in placeholders)
@@ -1137,7 +1140,39 @@ class QzoneSelfieBridgePlugin(Star):
         self, today: dt.datetime, data: ScheduleData | None
     ) -> ScheduleData:
         if self._schedule_is_publishable(data) and data is not None:
-            return data
+            return data.with_defaults() if hasattr(data, "with_defaults") else data
+
+        outfit_style = (
+            (getattr(data, "outfit_style", "") or "").strip() if data else ""
+        ) or "自然日常风"
+        anchor_time = str(self.life_config_raw.get("schedule_time") or "07:00")
+        anchor_dt = self._resolve_life_cycle_anchor(today, anchor_time)
+        outfit = (
+            f"风格：{outfit_style}\n"
+            f"今天以 {outfit_style} 为主线，早晚层次不同，出门阶段更完整利落，回家后换成更舒服的状态。"
+        )
+        schedule = "这一天从早上整理状态开始，白天处理工作或学习，傍晚收尾回家，晚上把节奏放慢下来。"
+        fallback = ScheduleData(
+            date=anchor_dt.strftime("%Y-%m-%d"),
+            anchor_time=anchor_time[:5],
+            window_start=anchor_dt.isoformat(timespec="seconds"),
+            window_end=(anchor_dt + dt.timedelta(days=1)).isoformat(timespec="seconds"),
+            outfit_style=outfit_style,
+            outfit=outfit,
+            schedule=schedule,
+            summary_outfit=outfit,
+            summary_schedule=schedule,
+            status="ok",
+        )
+        logger.warning(
+            "[QzoneSelfieBridge] use bridge local fallback schedule for publish: date=%s style=%s",
+            fallback.date,
+            outfit_style,
+        )
+        return fallback.with_defaults() if hasattr(fallback, "with_defaults") else fallback
+
+        if self._schedule_is_publishable(data) and data is not None:
+            return data.with_defaults() if hasattr(data, "with_defaults") else data
 
         outfit_style = (
             (getattr(data, "outfit_style", "") or "").strip() if data else ""
@@ -1163,9 +1198,68 @@ class QzoneSelfieBridgePlugin(Star):
             status="ok",
         )
 
+    def _resolve_life_cycle_anchor(self, moment: dt.datetime, anchor_time: str) -> dt.datetime:
+        parts = [int(part) for part in str(anchor_time or "07:00").split(":")[:2]]
+        hour = parts[0] if parts else 7
+        minute = parts[1] if len(parts) > 1 else 0
+        anchor = moment.replace(hour=hour, minute=minute, second=0, microsecond=0)
+        if moment < anchor:
+            anchor -= dt.timedelta(days=1)
+        return anchor
+
+    def _get_active_schedule_segment(self, schedule: ScheduleData) -> Any:
+        if hasattr(schedule, "active_segment"):
+            segment = schedule.active_segment(dt.datetime.now())
+            if segment is not None:
+                return segment
+        return None
+
+    def _build_segment_prompt_context(self, schedule: ScheduleData) -> dict[str, str]:
+        segment = self._get_active_schedule_segment(schedule)
+        return {
+            "segment_label": getattr(segment, "label", "") or "当前时段",
+            "segment_start_time": getattr(segment, "start_time", "") or "",
+            "segment_end_time": getattr(segment, "end_time", "") or "",
+            "segment_outfit": getattr(segment, "outfit", "") or schedule.outfit or "日常穿搭",
+            "segment_activity": getattr(segment, "activity", "") or schedule.schedule or "按计划生活",
+            "segment_location": getattr(segment, "location", "") or "日常活动场景",
+            "segment_mood": getattr(segment, "mood", "") or "自然放松",
+            "segment_selfie_scene": getattr(segment, "selfie_scene", "") or "自然生活自拍",
+            "segment_selfie_prompt_hint": getattr(segment, "selfie_prompt_hint", "") or "",
+            "segment_caption_hint": getattr(segment, "caption_hint", "") or "",
+        }
+
     def _build_selfie_prompt(
         self, schedule: ScheduleData, extra: str | None = None
     ) -> str:
+        segment_ctx = self._build_segment_prompt_context(schedule)
+        character_traits = self.config.selfie_character_traits.strip()
+        character_traits_block = (
+            f"额外角色特征：{character_traits}。"
+            if character_traits
+            else ""
+        )
+        return self.config.selfie_prompt_template.format(
+            outfit_style=schedule.outfit_style or "自然日常风",
+            outfit=segment_ctx["segment_outfit"],
+            schedule=segment_ctx["segment_activity"],
+            summary_outfit=getattr(schedule, "summary_outfit", "") or schedule.outfit or "日常穿搭",
+            summary_schedule=getattr(schedule, "summary_schedule", "") or schedule.schedule or "按计划生活",
+            segment_label=segment_ctx["segment_label"],
+            segment_start_time=segment_ctx["segment_start_time"],
+            segment_end_time=segment_ctx["segment_end_time"],
+            segment_outfit=segment_ctx["segment_outfit"],
+            segment_activity=segment_ctx["segment_activity"],
+            segment_location=segment_ctx["segment_location"],
+            segment_mood=segment_ctx["segment_mood"],
+            selfie_scene=segment_ctx["segment_selfie_scene"],
+            selfie_prompt_hint=segment_ctx["segment_selfie_prompt_hint"],
+            caption_hint=segment_ctx["segment_caption_hint"],
+            character_traits=character_traits,
+            character_traits_block=character_traits_block,
+            extra=(extra or "").strip(),
+        ).strip()
+        segment_ctx = self._build_segment_prompt_context(schedule)
         character_traits = self.config.selfie_character_traits.strip()
         character_traits_block = (
             f"\u989d\u5916\u89d2\u8272\u7279\u5f81\uff1a{character_traits}\u3002"
@@ -1538,6 +1632,61 @@ class QzoneSelfieBridgePlugin(Star):
         extra: str | None = None,
         origin: str | None = None,
     ) -> str:
+        segment_ctx = self._build_segment_prompt_context(schedule)
+        outfit_style = schedule.outfit_style or "自然日常风"
+        outfit = segment_ctx["segment_outfit"]
+        day_schedule = segment_ctx["segment_activity"]
+        prompt = self.config.caption_prompt_template.format(
+            outfit_style=outfit_style,
+            outfit=outfit,
+            schedule=day_schedule,
+            summary_outfit=getattr(schedule, "summary_outfit", "") or schedule.outfit or "日常穿搭",
+            summary_schedule=getattr(schedule, "summary_schedule", "") or schedule.schedule or "按计划生活",
+            segment_label=segment_ctx["segment_label"],
+            segment_start_time=segment_ctx["segment_start_time"],
+            segment_end_time=segment_ctx["segment_end_time"],
+            segment_outfit=segment_ctx["segment_outfit"],
+            segment_activity=segment_ctx["segment_activity"],
+            segment_location=segment_ctx["segment_location"],
+            segment_mood=segment_ctx["segment_mood"],
+            selfie_scene=segment_ctx["segment_selfie_scene"],
+            selfie_prompt_hint=segment_ctx["segment_selfie_prompt_hint"],
+            caption_hint=segment_ctx["segment_caption_hint"],
+            selfie_prompt=selfie_prompt,
+            extra=(extra or "").strip(),
+        )
+        fallback = self.config.fallback_caption_template.format(
+            outfit_style=outfit_style,
+            outfit=outfit,
+            schedule=day_schedule,
+            summary_outfit=getattr(schedule, "summary_outfit", "") or schedule.outfit or "日常穿搭",
+            summary_schedule=getattr(schedule, "summary_schedule", "") or schedule.schedule or "按计划生活",
+            segment_label=segment_ctx["segment_label"],
+            segment_start_time=segment_ctx["segment_start_time"],
+            segment_end_time=segment_ctx["segment_end_time"],
+            segment_outfit=segment_ctx["segment_outfit"],
+            segment_activity=segment_ctx["segment_activity"],
+            segment_location=segment_ctx["segment_location"],
+            segment_mood=segment_ctx["segment_mood"],
+            selfie_scene=segment_ctx["segment_selfie_scene"],
+            selfie_prompt_hint=segment_ctx["segment_selfie_prompt_hint"],
+            caption_hint=segment_ctx["segment_caption_hint"],
+        ).strip()
+
+        provider = self._get_provider(origin)
+        if provider:
+            session_id = f"qzone_selfie_caption_{int(dt.datetime.now().timestamp())}"
+            try:
+                resp = await provider.text_chat(prompt, session_id=session_id)
+                text = self._extract_completion_text(resp)
+                if text:
+                    return self._normalize_caption_text(text, fallback)
+            except Exception as exc:
+                logger.warning("[QzoneSelfieBridge] caption llm failed: %s", exc)
+            finally:
+                await self._cleanup_temp_session(session_id)
+
+        return self._normalize_caption_text("", fallback)
         outfit_style = schedule.outfit_style or "\u81ea\u7136\u65e5\u5e38\u98ce"
         outfit = schedule.outfit or "\u65e5\u5e38\u7a7f\u642d"
         day_schedule = schedule.schedule or "\u4eca\u5929\u6309\u8ba1\u5212\u751f\u6d3b"
