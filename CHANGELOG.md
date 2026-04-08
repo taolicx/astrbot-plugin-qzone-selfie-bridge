@@ -1,23 +1,14 @@
 # Changelog
 
-## v0.1.11
+## v0.1.13
 
-- 修复新安装后“自拍提示词优化器 API”下拉仍然为空的问题
-- 插件启动时除了读取运行中的聊天 Provider，也会在必要时直接从 `cmd_config.json` 回填聊天模型列表
-- 在 `initialize`、`on_astrbot_loaded` 和 `on_plugin_loaded` 阶段都会刷新一次配置页下拉，减少首次安装时的时序问题
+- 新增 `skip_scheduled_publish_when_busy`，上一条发布任务仍在执行时，新的定时发布会直接跳过，不再堆积等待
+- 用于配合图片改图链路的长耗时场景，降低高峰期内存占用和定时任务重叠风险
 
-## v0.1.10
+## v0.1.12
 
-- 新增 `refresh_life_before_publish` 开关
-- 开启后每次生成自拍前都会先强制刷新一次 `life_scheduler` 的当日推荐、穿搭和日程
-- 强刷失败时会自动回退到当天缓存或原有的缺失补生成逻辑
-
-## v0.1.9
-
-- 定时任务不再只依赖 `event.bot` 才能拿到 QQ 平台 client
-- 新增从 AstrBot 平台实例 `get_client()` 回退获取 OneBot client 的逻辑
-- 获取到 live client 后会主动绑定回已加载的 qzone 插件 `cfg.client / sender.cfg.client`
-- 修复定时发布时“当前没有可用 bot client，无法自动重新登录 QQ 空间”导致无法自动恢复 cookies 的问题
+- 修复冷启动时 `initialize()` 先刷新优化器模型下拉、但 `data_root` 尚未赋值导致插件载入失败的问题
+- `_refresh_optimizer_provider_schema_options()` 现在会回退使用 `astrbot_data_dir` 读取 `cmd_config.json`，避免再因为初始化顺序导致重启后必须手动重载
 
 ## v0.1.8
 
