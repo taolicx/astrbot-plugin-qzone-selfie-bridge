@@ -81,6 +81,7 @@ class BridgeConfig:
     append_selfie_to_existing_images: bool
     custom_publish_enabled: bool
     custom_publish_times: tuple[str, ...]
+    skip_scheduled_publish_when_busy: bool
     precheck_qzone_before_publish: bool
     auto_refresh_qzone_cookies: bool
     notify_target_users: tuple[str, ...]
@@ -145,6 +146,9 @@ class BridgeConfig:
             custom_publish_enabled=bool(data.get("custom_publish_enabled", False)),
             custom_publish_times=cls._normalize_time_items(
                 data.get("custom_publish_times", [])
+            ),
+            skip_scheduled_publish_when_busy=bool(
+                data.get("skip_scheduled_publish_when_busy", True)
             ),
             precheck_qzone_before_publish=bool(
                 data.get("precheck_qzone_before_publish", True)
@@ -294,6 +298,8 @@ class QzoneSelfieBridgePlugin(Star):
 
         plugins_dir = Path(__file__).resolve().parent.parent
         self.astrbot_data_dir = plugins_dir.parent
+        # 某些启动阶段会先调用 schema 刷新逻辑，这里提前暴露 data_root 兼容旧代码路径。
+        self.data_root = self.astrbot_data_dir
         self.config_dir = self.astrbot_data_dir / "config"
         self.plugin_data_root = self.astrbot_data_dir / "plugin_data"
 
@@ -565,7 +571,8 @@ class QzoneSelfieBridgePlugin(Star):
             provider_ids.append(provider_id)
 
         if len(provider_ids) == 1:
-            cmd_config_path = self.data_root / "cmd_config.json"
+            data_root = getattr(self, "data_root", None) or self.astrbot_data_dir
+            cmd_config_path = Path(data_root) / "cmd_config.json"
             try:
                 cmd_config = json.loads(cmd_config_path.read_text(encoding="utf-8-sig"))
             except Exception as exc:
@@ -932,6 +939,16 @@ class QzoneSelfieBridgePlugin(Star):
         self._patched_qzone_services.clear()
 
     async def _run_custom_publish_job(self, time_spec: str) -> None:
+        if (
+            self.config.skip_scheduled_publish_when_busy
+            and self._publish_lock.locked()
+        ):
+            # 定时任务不排队，前一条还没跑完就直接跳过，避免堆积出多次重图任务。
+            logger.warning(
+                "[QzoneSelfieBridge] custom publish skipped because previous publish is still running: time=%s",
+                time_spec,
+            )
+            return
         logger.info(
             "[QzoneSelfieBridge] custom publish trigger fired: time=%s", time_spec
         )
@@ -1083,27 +1100,68 @@ class QzoneSelfieBridgePlugin(Star):
                 origin or self.DEFAULT_ORIGIN,
                 extra=extra,
             )
-            if data.status == "ok":
-                return data
+            if self._schedule_is_publishable(data):
+                return self._coerce_schedule_for_publish(today, data)
             logger.warning(
                 "[QzoneSelfieBridge] forced life refresh failed, fallback to cached schedule: status=%s",
                 data.status,
             )
         data = self.life_data_mgr.get(today)
-        if data and data.status == "ok":
-            return data
+        if self._schedule_is_publishable(data):
+            return self._coerce_schedule_for_publish(today, data)
 
         if not self.config.regenerate_life_when_missing:
-            raise RuntimeError("当天生活日程不存在，且未开启自动补生成。")
+            return self._coerce_schedule_for_publish(today, data)
 
         data = await self.life_generator.generate_schedule(
             today,
             origin or self.DEFAULT_ORIGIN,
             extra=extra,
         )
-        if data.status != "ok":
-            raise RuntimeError("生活日程生成失败。")
-        return data
+        return self._coerce_schedule_for_publish(today, data)
+
+    def _schedule_is_publishable(self, data: ScheduleData | None) -> bool:
+        if not data:
+            return False
+        if (getattr(data, "status", "") or "").strip().lower() == "ok":
+            return True
+        outfit = (getattr(data, "outfit", "") or "").strip()
+        schedule = (getattr(data, "schedule", "") or "").strip()
+        if not outfit or not schedule:
+            return False
+        placeholders = ("生成失败", "failed", "error")
+        lowered = f"{outfit}\n{schedule}".lower()
+        return not any(marker in lowered for marker in placeholders)
+
+    def _coerce_schedule_for_publish(
+        self, today: dt.datetime, data: ScheduleData | None
+    ) -> ScheduleData:
+        if self._schedule_is_publishable(data) and data is not None:
+            return data
+
+        outfit_style = (
+            (getattr(data, "outfit_style", "") or "").strip() if data else ""
+        ) or "自然日常风"
+        outfit = (
+            f"风格：{outfit_style}\n"
+            f"今天走 {outfit_style} 路线，整体保持自然、干净、顺眼，"
+            "穿搭以舒服耐看为主，不做夸张堆叠。"
+        )
+        schedule = (
+            "今天按自己的节奏慢慢过，先处理手头的事，再留一点时间休息、整理或随手记录生活。"
+        )
+        logger.warning(
+            "[QzoneSelfieBridge] use bridge local fallback schedule for publish: date=%s style=%s",
+            today.strftime("%Y-%m-%d"),
+            outfit_style,
+        )
+        return ScheduleData(
+            date=today.strftime("%Y-%m-%d"),
+            outfit_style=outfit_style,
+            outfit=outfit,
+            schedule=schedule,
+            status="ok",
+        )
 
     def _build_selfie_prompt(
         self, schedule: ScheduleData, extra: str | None = None
