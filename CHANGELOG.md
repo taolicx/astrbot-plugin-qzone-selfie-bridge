@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.2.3
+
+- 兼容旧版 `life_scheduler` 的 `ScheduleData` 构造函数，桥接插件本地兜底生成日程时会自动过滤新字段
+- 修复当云端仍安装旧版 `life_scheduler` 时，`/自拍说说` 在桥接兜底阶段因 `anchor_time` 等参数不兼容而直接报错的问题
+
 ## v0.2.2
 
 - 兼容旧版 `life_scheduler` 的 `ScheduleDataManager` 构造函数，若不存在 `anchor_time_provider` 形参则自动降级初始化
