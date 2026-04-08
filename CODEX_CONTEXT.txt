@@ -1,0 +1,56 @@
+作用概览
+- 这是 `astrbot_plugin_qzone_selfie_bridge` 的分支工作副本。
+- 当前分支围绕“读取固定 24 小时窗口里的当前时段，再按当前时段生成自拍改图提示词、说说文案，并接入独立文案 Provider”继续演进。
+
+当前版本重点
+- 版本号：`v0.2.4`
+- 不碰原主线运行目录，只在这个分支副本里继续做时段联动与文案链修复。
+- 自拍改图主链会优先消费 `life_scheduler` 当前时段的：
+  - 穿搭细节
+  - 活动
+  - 地点
+  - 情绪
+  - 自拍场景
+- 说说文案链现在支持单独配置 `caption_provider_id`，不再默认和当前会话模型或自拍提示词优化器共用同一个聊天 Provider。
+- 文案归一化阶段会过滤 `I am ready to help...`、`available tools`、`我已准备好帮助完成任务` 这类占位废话，命中时改用本地 fallback 文案。
+
+关键文件
+- `main.py`
+  - 桥接 `life_scheduler`、`gitee_aiimg` 和 `qzone`
+  - 负责定时发布、手动 `/自拍说说`、qzone 接管、登录预检、cookie 刷新和结果通知
+  - 当前新增重点：
+    - `_get_caption_provider()`
+    - `_generate_time_segmented_caption()`
+    - `_normalize_caption_text()`
+    - `_refresh_optimizer_provider_schema_options()`
+- `_conf_schema.json`
+  - 暴露桥接插件配置项
+  - 当前分支新增 `caption_provider_id`
+- `metadata.yaml`
+  - 当前分支元数据版本
+- `CHANGELOG.md`
+  - 当前分支变更说明
+
+执行流
+- 读取/生成当天固定窗口日程
+- 取当前时段 `segment`
+- 构造时段化自拍改图提示词
+- 用文案专用 Provider 或回退 Provider 生成说说文案
+- 过滤文案里的占位废话
+- 走 qzone 发布
+
+排错提示
+- 如果文案仍然像工具占位回复：
+  - 看日志里是否出现 `caption provider start`
+  - 看 `configured_provider` 和 `actual_provider` 是否正确
+  - 看是否出现 `caption placeholder reply detected`
+- 如果说说文案没有走单独 API：
+  - 先检查配置页里的 `caption_provider_id`
+  - 再看 `_get_caption_provider()` 是否命中独立 provider
+- 如果 `/自拍说说` 仍受 `life_scheduler` 生成失败影响：
+  - 先看桥接是否打印 `use bridge local fallback schedule for publish`
+  - 这说明主链已经从 `life_scheduler` 失败切回桥接本地兜底日程
+
+已知边界
+- 这条桥接链仍依赖 `gitee_aiimg`、`qzone`、`life_scheduler` 三个兄弟插件全部已安装
+- 云端经常会经过 GitHub 镜像缓存，因此发布新分支时优先换全新分支名，避免装到旧 zip 包
