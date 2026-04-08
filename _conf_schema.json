@@ -87,6 +87,14 @@
     ],
     "default": ""
   },
+  "caption_provider_id": {
+    "description": "用于生成说说文案的聊天 Provider ID，留空则跟随当前会话模型",
+    "type": "string",
+    "options": [
+      ""
+    ],
+    "default": ""
+  },
   "selfie_prompt_optimizer_template": {
     "description": "自拍改图提示词优化器模板",
     "type": "text",
