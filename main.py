@@ -44,6 +44,11 @@ from astrbot_plugin_qzone.core.qzone.api import QzoneAPI
 from astrbot_plugin_qzone.core.qzone.session import QzoneSession
 from astrbot_plugin_qzone.core.qzone.utils import download_file as download_remote_image
 
+_PLACEHOLDER_REPLY_RE = re.compile(
+    r"(i\s*am\s*ready\s*to\s*help|i'?m\s*ready\s*to\s*help|available\s*tools|我已准备好帮助完成任务)",
+    re.IGNORECASE,
+)
+
 LIFE_PLUGIN_ID = ""
 
 try:
@@ -93,6 +98,7 @@ class BridgeConfig:
     selfie_character_traits: str
     optimize_selfie_prompt: bool
     selfie_prompt_optimizer_provider_id: str
+    caption_provider_id: str
     selfie_prompt_optimizer_template: str
     caption_prompt_template: str
     fallback_caption_template: str
@@ -183,6 +189,7 @@ class BridgeConfig:
             selfie_prompt_optimizer_provider_id=str(
                 data.get("selfie_prompt_optimizer_provider_id") or ""
             ).strip(),
+            caption_provider_id=str(data.get("caption_provider_id") or "").strip(),
             selfie_prompt_optimizer_template=str(
                 data.get("selfie_prompt_optimizer_template")
                 or (
@@ -618,13 +625,14 @@ class QzoneSelfieBridgePlugin(Star):
             )
             return
 
-        field = schema.get("selfie_prompt_optimizer_provider_id")
-        if not isinstance(field, dict):
-            return
-
-        schema_changed = field.get("options") != provider_ids
-        if schema_changed:
-            field["options"] = provider_ids
+        schema_changed = False
+        for field_name in ("selfie_prompt_optimizer_provider_id", "caption_provider_id"):
+            field = schema.get(field_name)
+            if not isinstance(field, dict):
+                continue
+            if field.get("options") != provider_ids:
+                field["options"] = list(provider_ids)
+                schema_changed = True
 
         if schema_changed:
             try:
@@ -646,12 +654,13 @@ class QzoneSelfieBridgePlugin(Star):
             live_schema = getattr(plugin_config, "schema", None)
             if not isinstance(live_schema, dict):
                 break
-            live_field = live_schema.get("selfie_prompt_optimizer_provider_id")
-            if not isinstance(live_field, dict):
-                break
-            if live_field.get("options") != provider_ids:
-                live_field["options"] = list(provider_ids)
-                live_schema_updated = True
+            for field_name in ("selfie_prompt_optimizer_provider_id", "caption_provider_id"):
+                live_field = live_schema.get(field_name)
+                if not isinstance(live_field, dict):
+                    continue
+                if live_field.get("options") != provider_ids:
+                    live_field["options"] = list(provider_ids)
+                    live_schema_updated = True
             break
 
         if schema_changed or live_schema_updated:
@@ -1459,8 +1468,13 @@ class QzoneSelfieBridgePlugin(Star):
             caption_hint=segment_ctx["segment_caption_hint"],
         ).strip()
 
-        provider = self._get_provider(origin)
+        provider = self._get_caption_provider(origin)
         if provider:
+            logger.info(
+                "[QzoneSelfieBridge] caption provider start: configured_provider=%s actual_provider=%s",
+                self.config.caption_provider_id or "<follow-current>",
+                self._get_provider_debug_name(provider),
+            )
             session_id = f"qzone_selfie_caption_{int(dt.datetime.now().timestamp())}"
             try:
                 resp = await provider.text_chat(prompt, session_id=session_id)
@@ -1748,6 +1762,19 @@ class QzoneSelfieBridgePlugin(Star):
                 return None
         return self._get_provider(origin)
 
+    def _get_caption_provider(self, origin: str | None = None):
+        provider_id = self.config.caption_provider_id.strip()
+        if provider_id:
+            try:
+                return self.context.get_provider_by_id(provider_id)
+            except Exception as exc:
+                logger.warning(
+                    "[QzoneSelfieBridge] get caption provider failed: %s",
+                    exc,
+                )
+                return None
+        return self._get_provider(origin)
+
     @staticmethod
     def _get_provider_debug_name(provider: Any) -> str:
         provider_cfg = getattr(provider, "provider_config", None)
@@ -1918,8 +1945,13 @@ class QzoneSelfieBridgePlugin(Star):
             caption_hint=segment_ctx["segment_caption_hint"],
         ).strip()
 
-        provider = self._get_provider(origin)
+        provider = self._get_caption_provider(origin)
         if provider:
+            logger.info(
+                "[QzoneSelfieBridge] caption provider start: configured_provider=%s actual_provider=%s",
+                self.config.caption_provider_id or "<follow-current>",
+                self._get_provider_debug_name(provider),
+            )
             session_id = f"qzone_selfie_caption_{int(dt.datetime.now().timestamp())}"
             try:
                 resp = await provider.text_chat(prompt, session_id=session_id)
@@ -1968,6 +2000,13 @@ class QzoneSelfieBridgePlugin(Star):
         raw = (text or fallback or "").strip()
         if not raw:
             return "\u6211\u4eca\u5929\u968f\u624b\u62cd\u4e86\u4e00\u5f20\u3002"
+        if _PLACEHOLDER_REPLY_RE.search(raw):
+            logger.warning(
+                "[QzoneSelfieBridge] caption placeholder reply detected before normalization, fallback applied"
+            )
+            raw = (fallback or "").strip()
+            if not raw:
+                return "\u6211\u4eca\u5929\u968f\u624b\u62cd\u4e86\u4e00\u5f20\u3002"
 
         raw = raw.replace("\r", "\n")
         for prefix in (
@@ -1992,6 +2031,11 @@ class QzoneSelfieBridgePlugin(Star):
         )
         lines = [line.strip(" -*\t") for line in raw.splitlines() if line.strip()]
         raw = "".join(lines).strip()
+        if _PLACEHOLDER_REPLY_RE.search(raw):
+            logger.warning(
+                "[QzoneSelfieBridge] caption placeholder reply detected after normalization, fallback applied"
+            )
+            raw = (fallback or "").strip()
         raw = re.split(r"[\u3002\uff01\uff1f!?\uff1b;\n]+", raw, maxsplit=1)[0].strip()
         raw = re.sub(r"\s+", "", raw)
 
