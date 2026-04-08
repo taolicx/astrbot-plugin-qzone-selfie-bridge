@@ -34,6 +34,11 @@
     "type": "list",
     "default": []
   },
+  "skip_scheduled_publish_when_busy": {
+    "description": "定时发布触发时，如果上一条发布任务仍在运行，是否直接跳过本次任务",
+    "type": "bool",
+    "default": true
+  },
   "precheck_qzone_before_publish": {
     "description": "每次发布前是否先验证 QQ 空间登录状态，通过后才继续生成图片和文案",
     "type": "bool",
@@ -83,7 +88,9 @@
     "description": "用于优化自拍提示词的聊天 Provider ID，打开配置页时会自动刷新为当前已配置的聊天 Provider，留空则跟随当前会话模型",
     "type": "string",
     "options": [
-      ""
+      "",
+      "openai/deepseek-v3",
+      "openai_1/[V-2.5]gemini-3.1-pro-preview"
     ],
     "default": ""
   },
