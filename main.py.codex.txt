@@ -1,0 +1,47 @@
+文件作用
+- 这是分支版桥接主文件，负责把 `life_scheduler` 的固定窗口/当前时段信息真正传给自拍改图和说说文案。
+- 当前版本新增了“文案单独 Provider”与“文案占位废话过滤”两层修复，解决自拍说说成功发布但文案仍变成 `I am ready to help...` 的问题。
+
+当前联调新增关键点
+- `_get_caption_provider()`
+  - 优先读取 `BridgeConfig.caption_provider_id`
+  - 找到则强制用该 Provider 生成说说文案
+  - 留空时才回退到 `_get_provider(origin)`
+- `_generate_time_segmented_caption()`
+  - 分时段文案主链
+  - 现在会记录：
+    - `configured_provider`
+    - `actual_provider`
+  - 便于确认文案是否真的走到了单独接入的 API
+- `_normalize_caption_text()`
+  - 负责把模型回复压成一句短文案
+  - 现在会拦截：
+    - `I am ready to help`
+    - `available tools`
+    - `我已准备好帮助完成任务`
+  - 命中后自动回退到 fallback 文案
+- `_refresh_optimizer_provider_schema_options()`
+  - 现在会同时刷新：
+    - `selfie_prompt_optimizer_provider_id`
+    - `caption_provider_id`
+  - 保证配置页里能选择自拍提示词优化器和文案生成器两个独立 Provider
+
+当前调用关系
+- `_build_selfie_publish_bundle()` 已经改为优先调用：
+  - `_build_time_segmented_selfie_prompt()`
+  - `_generate_time_segmented_caption()`
+- `_generate_time_segmented_caption()` 内部：
+  - `_get_caption_provider()`
+  - `provider.text_chat(...)`
+  - `_normalize_caption_text(...)`
+
+排错提示
+- 如果文案还是错模型生成：
+  - 先看日志 `caption provider start`
+  - 再看 `configured_provider` 是否等于你配置的 `caption_provider_id`
+- 如果文案仍含英文占位废话：
+  - 看日志里是否出现 `caption placeholder reply detected`
+  - 出现则说明过滤已命中，剩下要检查 fallback 文案模板
+- 如果配置页看不到文案模型下拉：
+  - 先看 `_conf_schema.json` 里是否存在 `caption_provider_id`
+  - 再看 live schema 是否被 AstrBot 的旧结构覆盖
