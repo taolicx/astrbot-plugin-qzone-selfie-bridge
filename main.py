@@ -322,12 +322,28 @@ class QzoneSelfieBridgePlugin(Star):
 
         self.life_data_dir = self.plugin_data_root / self.life_plugin_id
         self.life_data_dir.mkdir(parents=True, exist_ok=True)
-        self.life_data_mgr = ScheduleDataManager(
-            self.life_data_dir / "schedule_data.json",
-            anchor_time_provider=lambda: str(
-                self.life_config_raw.get("schedule_time") or "07:00"
-            ),
+        life_anchor_provider = lambda: str(
+            self.life_config_raw.get("schedule_time") or "07:00"
         )
+        # 兼容旧版 life_scheduler：旧构造函数没有 anchor_time_provider 形参。
+        try:
+            self.life_data_mgr = ScheduleDataManager(
+                self.life_data_dir / "schedule_data.json",
+                anchor_time_provider=life_anchor_provider,
+            )
+        except TypeError as exc:
+            if "anchor_time_provider" not in str(exc):
+                raise
+            self.life_data_mgr = ScheduleDataManager(
+                self.life_data_dir / "schedule_data.json"
+            )
+            # 旧版管理器没有公开锚点接口时，尽量把动态锚点函数挂回实例，后续调用可复用。
+            if not hasattr(self.life_data_mgr, "_anchor_time_provider"):
+                setattr(
+                    self.life_data_mgr,
+                    "_anchor_time_provider",
+                    life_anchor_provider,
+                )
         self.life_generator = SchedulerGenerator(
             self.context, self.life_config_raw, self.life_data_mgr
         )
