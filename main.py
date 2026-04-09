@@ -174,12 +174,12 @@ class BridgeConfig:
             selfie_prompt_template=str(
                 data.get("selfie_prompt_template")
                 or (
-                    "请基于提供的自拍参考图完成一次自然、真实、生活感强的自拍改图。"
+                    "请基于提供的自拍参考图完成一次自然、真实、生活感强、明显更年轻清爽的自拍改图。"
                     "必须保持同一人物的身份一致性、脸部特征和主体关系。"
                     "穿搭风格：{outfit_style}。"
                     "今日穿搭：{outfit}。"
                     "{character_traits_block}"
-                    "请重点调整穿搭、发型细节、表情、姿态、背景氛围与镜头质感。"
+                    "请重点调整穿搭、发型细节、表情、姿态、背景氛围与镜头质感，优先表现年轻感、清透感、生活感和随手自拍感。"
                     "整体效果要像本人随手拍下的真实生活自拍，不要变成陌生人，也不要做成纯文生图感。"
                     "{extra}"
                 )
@@ -196,7 +196,7 @@ class BridgeConfig:
                     "\u4f60\u8981\u628a\u4ee5\u4e0b\u81ea\u62cd\u6539\u56fe\u63d0\u793a\u8bcd\u4f18\u5316\u6210\u66f4\u9002\u5408\u53c2\u8003\u56fe\u6539\u56fe\u6a21\u578b\u7684\u7248\u672c\u3002"
                     "\u8fd9\u662f\u6539\u56fe\uff0c\u4e0d\u662f\u6587\u751f\u56fe\uff0c\u5fc5\u987b\u56f4\u7ed5\u53c2\u8003\u56fe\u4e2d\u7684\u540c\u4e00\u4eba\u7269\u505a\u7f16\u8f91\u3002"
                     "\u8bf7\u53ea\u8f93\u51fa\u4f18\u5316\u540e\u7684\u63d0\u793a\u8bcd\u672c\u8eab\uff0c\u4e0d\u8981\u89e3\u91ca\uff0c\u4e0d\u8981\u5206\u70b9\uff0c\u4e0d\u8981\u5e26\u5f15\u53f7\u3002"
-                    "\u76ee\u6807\uff1a\u771f\u5b9e\u3001\u81ea\u7136\u3001\u597d\u770b\u3001\u751f\u6d3b\u611f\u5f3a\u7684\u81ea\u62cd\u6539\u56fe\uff0c\u4eba\u50cf\u81ea\u7136\uff0c\u7a7f\u642d\u6e05\u6670\uff0c\u6784\u56fe\u5e72\u51c0\uff0c\u7167\u7247\u8d28\u611f\u597d\u3002"
+                    "\u76ee\u6807\uff1a\u771f\u5b9e\u3001\u81ea\u7136\u3001\u597d\u770b\u3001\u751f\u6d3b\u611f\u5f3a\u3001\u5e74\u8f7b\u6e05\u723d\u7684\u81ea\u62cd\u6539\u56fe\uff0c\u4eba\u50cf\u81ea\u7136\uff0c\u7a7f\u642d\u6e05\u6670\uff0c\u6784\u56fe\u5e72\u51c0\uff0c\u7167\u7247\u8d28\u611f\u597d\uff0c\u4e0d\u8981\u663e\u5f97\u8001\u6c14\u6216\u8fc7\u5ea6\u6210\u719f\u3002"
                     "\u4f18\u5148\u4fdd\u7559\u4eba\u7269\u7684\u8eab\u4efd\u4e00\u81f4\u6027\uff0c\u7a81\u51fa\u53d1\u578b\u3001\u4e94\u5b98\u3001\u8868\u60c5\u3001\u7a7f\u642d\u548c\u6574\u4f53\u6c14\u8d28\u7684\u7edf\u4e00\u6027\uff0c\u53ef\u4ee5\u8c03\u6574\u80cc\u666f\u6c1b\u56f4\u4f46\u4e0d\u8981\u504f\u79bb\u771f\u5b9e\u81ea\u62cd\u611f\u3002"
                     "\u57fa\u7840\u63d0\u793a\u8bcd\uff1a{base_prompt}\u3002"
                     "\u7a7f\u642d\u98ce\u683c\uff1a{outfit_style}\u3002"
@@ -1462,6 +1462,60 @@ class QzoneSelfieBridgePlugin(Star):
             "segment_visual_detail": segment_visual,
         }
 
+    @staticmethod
+    def _is_home_like_segment(segment_ctx: dict[str, str]) -> bool:
+        text = " ".join(
+            [
+                segment_ctx.get("segment_label", ""),
+                segment_ctx.get("segment_activity", ""),
+                segment_ctx.get("segment_location", ""),
+                segment_ctx.get("segment_selfie_scene", ""),
+                segment_ctx.get("segment_outfit", ""),
+            ]
+        ).lower()
+        keywords = (
+            "在家",
+            "家里",
+            "回家",
+            "居家",
+            "卧室",
+            "客厅",
+            "房间",
+            "宿舍",
+            "夜间休息",
+            "起床后在家",
+            "到家后放松",
+            "睡前",
+            "home",
+        )
+        for keyword in keywords:
+            if keyword in text:
+                return True
+        return False
+
+    def _build_selfie_guardrail_lines(self, schedule: ScheduleData) -> list[str]:
+        segment_ctx = self._build_segment_runtime_context(schedule)
+        lines = [
+            "- 人物必须保持明显的年轻感、清透感和自然生活感，整体更像二十岁上下的年轻女生，不要出现阿姨感、熟女感、妈妈感、疲态或故意显老的成熟妆造。",
+            "- 五官和皮肤质感要干净细腻，表情自然放松，避免厚重浓妆、老气卷发、故作成熟的职业照气质和明显偏大的年龄感。",
+        ]
+        if self._is_home_like_segment(segment_ctx):
+            lines.extend(
+                [
+                    "- 当前是居家时段，穿搭可以更轻薄、清凉、松弛一些，优先呈现自然家居感，例如短袖、薄针织、背心外搭、家居短裤或宽松居家服。",
+                    "- 居家阶段允许适度露出锁骨、手臂或腿部来表现清凉感，但必须保持日常自然，不要做成内衣感、擦边感或色情化画面。",
+                    "- 居家自拍氛围应更像在房间里、窗边、镜前或家里角落顺手拍的一张，重点是轻松、清爽、年轻。",
+                ]
+            )
+        else:
+            lines.extend(
+                [
+                    "- 当前不是居家时段，穿搭必须符合出门、通勤、工作或外出状态，避免错误出现睡衣、家居背心、家居短裤、拖鞋或明显只适合室内的过度清凉搭配。",
+                    "- 外出阶段整体要更利落、清爽、年轻，不要把人物做成老气通勤照或年龄感明显偏大的成熟女性。",
+                ]
+            )
+        return lines
+
     def _build_segment_directive_text(self, schedule: ScheduleData) -> str:
         segment_ctx = self._build_segment_runtime_context(schedule)
         lines = [
@@ -1478,6 +1532,7 @@ class QzoneSelfieBridgePlugin(Star):
             lines.append(f"- 外观细节：{segment_ctx['segment_visual_detail']}")
         if segment_ctx["segment_selfie_prompt_hint"]:
             lines.append(f"- 自拍补充要求：{segment_ctx['segment_selfie_prompt_hint']}")
+        lines.extend(self._build_selfie_guardrail_lines(schedule))
         lines.append("- 改图必须严格围绕当前时段，不要把全天不同阶段混成同一套穿搭或场景。")
         return "\n".join(lines)
 
