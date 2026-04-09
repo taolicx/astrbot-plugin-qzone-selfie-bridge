@@ -4,6 +4,11 @@
   - 文案单独 Provider
   - 文案占位废话过滤
   - 普通聊天自拍复用当前时段上下文
+- 当前又新增一层“自拍风格护栏”：
+  - 年轻感、清透感、自然生活感
+  - 压制老气、熟女感、阿姨感、妈妈感
+  - 居家时段更轻薄清凉
+  - 非居家时段禁止室内家居搭配误入
 - 现在不止 `/自拍说说`，普通聊天里的 `/自拍` 和 LLM 自动自拍也会带上当前时间段的穿搭/活动/场景。
 
 当前联调新增关键点
@@ -14,6 +19,11 @@
   - 读取当前固定窗口日程
   - 取当前时段 segment
   - 调用 `_build_time_segmented_selfie_prompt()` 生成与 `/自拍说说` 同套路数的自拍提示词
+- `_is_home_like_segment()`
+  - 判断当前时段是否属于在家/回家/卧室/居家等室内放松阶段
+- `_build_selfie_guardrail_lines()`
+  - 统一追加“年轻感”和“居家清凉/外出完整”的硬约束
+  - 这层直接拼在自拍改图指令里，不依赖用户旧配置模板是否更新
 - `_get_caption_provider()`
   - 优先读取 `BridgeConfig.caption_provider_id`
   - 找到则强制用该 Provider 生成说说文案
@@ -45,6 +55,7 @@
   - `gitee_aiimg._generate_selfie_image_with_meta()`
   - 被 `_patch_gitee_selfie_generators()` 包一层
   - 再进入 `_build_chat_selfie_prompt()`
+- 自拍改图主链与普通聊天自拍链都会在 `_build_segment_directive_text()` 里吃到 `_build_selfie_guardrail_lines()`
 - `_generate_time_segmented_caption()` 内部：
   - `_get_caption_provider()`
   - `provider.text_chat(...)`
@@ -54,6 +65,10 @@
 - 如果普通聊天里的自拍仍然不像当前时段：
   - 先看日志里是否出现 `patched gitee selfie generation`
   - 再看是否出现 `apply current segment selfie context to gitee selfie flow`
+- 如果自拍效果还是偏老、偏成熟：
+  - 看 `_build_selfie_guardrail_lines()` 是否已经追加到最终提示词
+  - 居家时段应出现更轻薄清凉的约束
+  - 非居家时段应出现“禁止家居背心/睡衣”的约束
 - 如果文案还是错模型生成：
   - 先看日志 `caption provider start`
   - 再看 `configured_provider` 是否等于你配置的 `caption_provider_id`
