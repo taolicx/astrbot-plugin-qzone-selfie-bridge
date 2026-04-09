@@ -313,6 +313,9 @@ class QzoneSelfieBridgePlugin(Star):
 
         self._publish_lock = asyncio.Lock()
         self._patched_qzone_services: dict[int, tuple[Any, Callable[..., Awaitable[Post]]]] = {}
+        self._patched_gitee_selfie_generators: dict[
+            int, tuple[Any, Callable[..., Awaitable[Any]]]
+        ] = {}
         self._schedule_timezone = self._resolve_schedule_timezone()
         self._custom_publish_scheduler: DailySelfiePublishScheduler | None = None
 
@@ -380,11 +383,13 @@ class QzoneSelfieBridgePlugin(Star):
 
         self._refresh_optimizer_provider_schema_options()
         self._patch_qzone_publishers()
+        self._patch_gitee_selfie_generators()
         self._start_custom_publish_scheduler()
 
     async def terminate(self):
         await self._stop_custom_publish_scheduler()
         self._unpatch_qzone_publishers()
+        self._unpatch_gitee_selfie_generators()
 
         try:
             await self.edit.close()
@@ -403,11 +408,13 @@ class QzoneSelfieBridgePlugin(Star):
     async def on_astrbot_loaded(self):
         self._refresh_optimizer_provider_schema_options()
         self._patch_qzone_publishers()
+        self._patch_gitee_selfie_generators()
 
     @filter.on_plugin_loaded()
     async def on_plugin_loaded(self, metadata: StarMetadata):
         self._refresh_optimizer_provider_schema_options()
         self._patch_qzone_publishers(metadata.star_cls if metadata else None)
+        self._patch_gitee_selfie_generators(metadata.star_cls if metadata else None)
 
     @filter.permission_type(filter.PermissionType.ADMIN)
     @filter.command(
@@ -679,6 +686,17 @@ class QzoneSelfieBridgePlugin(Star):
             module_name = star_obj.__class__.__module__
             if module_name == "astrbot_plugin_qzone.main" or module_name.startswith(
                 "astrbot_plugin_qzone."
+            ):
+                yield star_obj
+
+    def _iter_gitee_plugins(self) -> Iterable[Any]:
+        for metadata in star_registry:
+            star_obj = getattr(metadata, "star_cls", None)
+            if star_obj is None or star_obj is self:
+                continue
+            module_name = star_obj.__class__.__module__
+            if module_name == "astrbot_plugin_gitee_aiimg.main" or module_name.startswith(
+                "astrbot_plugin_gitee_aiimg."
             ):
                 yield star_obj
 
@@ -966,6 +984,79 @@ class QzoneSelfieBridgePlugin(Star):
             except Exception as exc:
                 logger.warning("[QzoneSelfieBridge] unpatch failed: %s", exc)
         self._patched_qzone_services.clear()
+
+    def _patch_gitee_selfie_generators(self, target_plugin: Any | None = None):
+        plugins = [target_plugin] if target_plugin is not None else list(
+            self._iter_gitee_plugins()
+        )
+        for plugin in plugins:
+            if plugin is None or plugin is self:
+                continue
+            original_generate = getattr(plugin, "_generate_selfie_image_with_meta", None)
+            if not callable(original_generate):
+                continue
+            if getattr(plugin, "_qzone_selfie_bridge_chat_selfie_patched", False):
+                continue
+
+            # 普通聊天里的“自拍”最终也会落到 gitee_aiimg 的 selfie 链。
+            # 这里在运行时包一层，把桥接插件已有的“当前固定窗口 + 当前时段”上下文复用过去，
+            # 让 /自拍 和 LLM 自动自拍与 /自拍说说 使用同一套路数。
+            async def wrapped_generate_selfie_image_with_meta(
+                event: AstrMessageEvent,
+                prompt: str,
+                backend: str | None,
+                *args: Any,
+                _original: Callable[..., Awaitable[Any]] = original_generate,
+                **kwargs: Any,
+            ):
+                origin = getattr(event, "unified_msg_origin", None) or (
+                    f"{self.DEFAULT_ORIGIN}:chat-selfie"
+                )
+                try:
+                    enriched_prompt = await self._build_chat_selfie_prompt(
+                        user_prompt=prompt,
+                        event=event,
+                        origin=origin,
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "[QzoneSelfieBridge] chat selfie prompt enrichment failed, keep raw prompt: %s",
+                        exc,
+                    )
+                    enriched_prompt = prompt
+                return await _original(
+                    event,
+                    enriched_prompt,
+                    backend,
+                    *args,
+                    **kwargs,
+                )
+
+            plugin._generate_selfie_image_with_meta = wrapped_generate_selfie_image_with_meta
+            plugin._qzone_selfie_bridge_chat_selfie_patched = True
+            plugin._qzone_selfie_bridge_original_generate_selfie_image_with_meta = (
+                original_generate
+            )
+            self._patched_gitee_selfie_generators[id(plugin)] = (
+                plugin,
+                original_generate,
+            )
+            logger.info(
+                "[QzoneSelfieBridge] patched gitee selfie generation: plugin=%s",
+                plugin.__class__.__name__,
+            )
+
+    def _unpatch_gitee_selfie_generators(self):
+        for plugin, original in self._patched_gitee_selfie_generators.values():
+            try:
+                plugin._generate_selfie_image_with_meta = original
+                plugin._qzone_selfie_bridge_chat_selfie_patched = False
+            except Exception as exc:
+                logger.warning(
+                    "[QzoneSelfieBridge] unpatch gitee selfie generator failed: %s",
+                    exc,
+                )
+        self._patched_gitee_selfie_generators.clear()
 
     async def _run_custom_publish_job(self, time_spec: str) -> None:
         if (
@@ -1265,6 +1356,26 @@ class QzoneSelfieBridgePlugin(Star):
         if moment < anchor:
             anchor -= dt.timedelta(days=1)
         return anchor
+
+    async def _build_chat_selfie_prompt(
+        self,
+        *,
+        user_prompt: str | None,
+        event: AstrMessageEvent | None = None,
+        origin: str | None = None,
+    ) -> str:
+        schedule = await self._get_or_create_schedule(origin=origin)
+        enriched_prompt = self._build_time_segmented_selfie_prompt(
+            schedule,
+            extra=(user_prompt or "").strip(),
+        )
+        segment_ctx = self._build_segment_runtime_context(schedule)
+        logger.info(
+            "[QzoneSelfieBridge] apply current segment selfie context to gitee selfie flow: origin=%s segment=%s",
+            origin or getattr(event, "unified_msg_origin", None) or self.DEFAULT_ORIGIN,
+            segment_ctx["segment_label"],
+        )
+        return enriched_prompt
 
     def _get_active_schedule_segment(self, schedule: ScheduleData) -> Any:
         if hasattr(schedule, "active_segment"):
