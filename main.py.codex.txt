@@ -1,8 +1,19 @@
 文件作用
 - 这是分支版桥接主文件，负责把 `life_scheduler` 的固定窗口/当前时段信息真正传给自拍改图和说说文案。
-- 当前版本新增了“文案单独 Provider”与“文案占位废话过滤”两层修复，解决自拍说说成功发布但文案仍变成 `I am ready to help...` 的问题。
+- 当前版本新增了三层修复：
+  - 文案单独 Provider
+  - 文案占位废话过滤
+  - 普通聊天自拍复用当前时段上下文
+- 现在不止 `/自拍说说`，普通聊天里的 `/自拍` 和 LLM 自动自拍也会带上当前时间段的穿搭/活动/场景。
 
 当前联调新增关键点
+- `_patch_gitee_selfie_generators()`
+  - 运行时包裹 `gitee_aiimg` 的 `_generate_selfie_image_with_meta()`
+  - 让普通聊天自拍也能先经过桥接插件补入当前时段上下文
+- `_build_chat_selfie_prompt()`
+  - 读取当前固定窗口日程
+  - 取当前时段 segment
+  - 调用 `_build_time_segmented_selfie_prompt()` 生成与 `/自拍说说` 同套路数的自拍提示词
 - `_get_caption_provider()`
   - 优先读取 `BridgeConfig.caption_provider_id`
   - 找到则强制用该 Provider 生成说说文案
@@ -30,12 +41,19 @@
 - `_build_selfie_publish_bundle()` 已经改为优先调用：
   - `_build_time_segmented_selfie_prompt()`
   - `_generate_time_segmented_caption()`
+- 普通聊天自拍链新增：
+  - `gitee_aiimg._generate_selfie_image_with_meta()`
+  - 被 `_patch_gitee_selfie_generators()` 包一层
+  - 再进入 `_build_chat_selfie_prompt()`
 - `_generate_time_segmented_caption()` 内部：
   - `_get_caption_provider()`
   - `provider.text_chat(...)`
   - `_normalize_caption_text(...)`
 
 排错提示
+- 如果普通聊天里的自拍仍然不像当前时段：
+  - 先看日志里是否出现 `patched gitee selfie generation`
+  - 再看是否出现 `apply current segment selfie context to gitee selfie flow`
 - 如果文案还是错模型生成：
   - 先看日志 `caption provider start`
   - 再看 `configured_provider` 是否等于你配置的 `caption_provider_id`
