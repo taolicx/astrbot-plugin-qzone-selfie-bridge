@@ -3,7 +3,7 @@
 - 当前分支围绕“读取固定 24 小时窗口里的当前时段，再按当前时段生成自拍改图提示词、说说文案，并接入独立文案 Provider”继续演进。
 
 当前版本重点
-- 版本号：`v0.2.5`
+- 版本号：`v0.2.6`
 - 不碰原主线运行目录，只在这个分支副本里继续做时段联动与文案链修复。
 - 自拍改图主链会优先消费 `life_scheduler` 当前时段的：
   - 穿搭细节
@@ -12,6 +12,11 @@
   - 情绪
   - 自拍场景
 - 普通聊天里的 `/自拍` 和 LLM 自动自拍也会被桥接插件在运行时补上同一套当前时段上下文，不再只有 `/自拍说说` 才吃到分时段日程
+- 自拍改图提示词新增了代码级护栏：
+  - 明确要求更年轻、更清透、更自然
+  - 明确压制阿姨感、熟女感、妈妈感、过度成熟妆造
+  - 居家时段允许更轻薄、更清凉、更松弛的家居搭配
+  - 非居家时段明确禁止错误出现睡衣、家居背心、家居短裤等室内搭配
 - 说说文案链现在支持单独配置 `caption_provider_id`，不再默认和当前会话模型或自拍提示词优化器共用同一个聊天 Provider。
 - 文案归一化阶段会过滤 `I am ready to help...`、`available tools`、`我已准备好帮助完成任务` 这类占位废话，命中时改用本地 fallback 文案。
 
@@ -22,6 +27,8 @@
   - 当前新增重点：
     - `_patch_gitee_selfie_generators()`
     - `_build_chat_selfie_prompt()`
+    - `_is_home_like_segment()`
+    - `_build_selfie_guardrail_lines()`
     - `_get_caption_provider()`
     - `_generate_time_segmented_caption()`
     - `_normalize_caption_text()`
@@ -51,6 +58,9 @@
 - 如果普通聊天里提到自拍但图还不像当前时段：
   - 看日志里是否出现 `apply current segment selfie context to gitee selfie flow`
   - 看 gitee 自拍链是否已经被 `patched gitee selfie generation`
+- 如果自拍效果仍然偏老气：
+  - 先看 `_build_segment_directive_text()` 是否已经把年轻感护栏拼进去
+  - 再看是否命中了居家/非居家分支
 - 如果说说文案没有走单独 API：
   - 先检查配置页里的 `caption_provider_id`
   - 再看 `_get_caption_provider()` 是否命中独立 provider
