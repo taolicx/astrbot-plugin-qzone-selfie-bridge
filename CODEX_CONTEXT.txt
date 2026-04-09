@@ -3,7 +3,7 @@
 - 当前分支围绕“读取固定 24 小时窗口里的当前时段，再按当前时段生成自拍改图提示词、说说文案，并接入独立文案 Provider”继续演进。
 
 当前版本重点
-- 版本号：`v0.2.4`
+- 版本号：`v0.2.5`
 - 不碰原主线运行目录，只在这个分支副本里继续做时段联动与文案链修复。
 - 自拍改图主链会优先消费 `life_scheduler` 当前时段的：
   - 穿搭细节
@@ -11,6 +11,7 @@
   - 地点
   - 情绪
   - 自拍场景
+- 普通聊天里的 `/自拍` 和 LLM 自动自拍也会被桥接插件在运行时补上同一套当前时段上下文，不再只有 `/自拍说说` 才吃到分时段日程
 - 说说文案链现在支持单独配置 `caption_provider_id`，不再默认和当前会话模型或自拍提示词优化器共用同一个聊天 Provider。
 - 文案归一化阶段会过滤 `I am ready to help...`、`available tools`、`我已准备好帮助完成任务` 这类占位废话，命中时改用本地 fallback 文案。
 
@@ -19,6 +20,8 @@
   - 桥接 `life_scheduler`、`gitee_aiimg` 和 `qzone`
   - 负责定时发布、手动 `/自拍说说`、qzone 接管、登录预检、cookie 刷新和结果通知
   - 当前新增重点：
+    - `_patch_gitee_selfie_generators()`
+    - `_build_chat_selfie_prompt()`
     - `_get_caption_provider()`
     - `_generate_time_segmented_caption()`
     - `_normalize_caption_text()`
@@ -33,6 +36,7 @@
 
 执行流
 - 读取/生成当天固定窗口日程
+- 普通聊天里的自拍请求会先经过桥接插件补入当前时段上下文
 - 取当前时段 `segment`
 - 构造时段化自拍改图提示词
 - 用文案专用 Provider 或回退 Provider 生成说说文案
@@ -44,6 +48,9 @@
   - 看日志里是否出现 `caption provider start`
   - 看 `configured_provider` 和 `actual_provider` 是否正确
   - 看是否出现 `caption placeholder reply detected`
+- 如果普通聊天里提到自拍但图还不像当前时段：
+  - 看日志里是否出现 `apply current segment selfie context to gitee selfie flow`
+  - 看 gitee 自拍链是否已经被 `patched gitee selfie generation`
 - 如果说说文案没有走单独 API：
   - 先检查配置页里的 `caption_provider_id`
   - 再看 `_get_caption_provider()` 是否命中独立 provider
